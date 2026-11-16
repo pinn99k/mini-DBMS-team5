@@ -1,0 +1,26 @@
+# 사용: docker compose run --rm dev
+# 소스는 바인드 마운트, 빌드 산출물과 테이블 데이터는 named volume(ext4)에 둔다.
+#   - 바인드 마운트(D:)는 9p 파일시스템이라 느리고 fsync 의미가 다르다 → 벤치·내구성 테스트 결과가 왜곡된다.
+#   - 볼트 안에 빌드 산출물·대용량 .tbl이 쌓이지 않게 한다.
+services:
+  dev:
+    build: ./docker
+    image: minidb-dev
+    working_dir: /work
+    volumes:
+      - .:/work
+      - build:/work/build
+      - data:/data
+    ports:
+      - "8080:8080"
+    # gdb(ptrace)와 TSan용 ASLR 끄기(setarch -R → personality)에 필요. 개발 컨테이너 전용.
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    stdin_open: true
+    tty: true
+
+volumes:
+  build:
+  data:

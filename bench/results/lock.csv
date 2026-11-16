@@ -1,0 +1,33 @@
+variant,workload,threads,ops_per_s,rows_written_per_s
+shared,read-only (findById),1,1282168,0
+shared,read-only (findById),2,1734586,0
+shared,read-only (findById),4,1615836,0
+shared,read-only (findById),8,1514402,0
+shared,mixed 90% read / 10% insert,1,994586,99657
+shared,mixed 90% read / 10% insert,2,492708,49492
+shared,mixed 90% read / 10% insert,4,604551,60678
+shared,mixed 90% read / 10% insert,8,608244,61033
+shared,insert 1 row,1,1254890,1254890
+shared,insert 1 row,2,743383,743383
+shared,insert 1 row,4,1187946,1187946
+shared,insert 1 row,8,1169772,1169772
+shared,insert 100-row batch,1,20850,2085000
+shared,insert 100-row batch,2,17636,1763666
+shared,insert 100-row batch,4,15526,1552600
+shared,insert 100-row batch,8,15758,1575866
+exclusive,read-only (findById),1,1377946,0
+exclusive,read-only (findById),2,1891516,0
+exclusive,read-only (findById),4,1737303,0
+exclusive,read-only (findById),8,1849897,0
+exclusive,mixed 90% read / 10% insert,1,1172547,117588
+exclusive,mixed 90% read / 10% insert,2,1114219,111370
+exclusive,mixed 90% read / 10% insert,4,1166975,116959
+exclusive,mixed 90% read / 10% insert,8,1260374,126478
+exclusive,insert 1 row,1,1315464,1315464
+exclusive,insert 1 row,2,867497,867497
+exclusive,insert 1 row,4,1050040,1050040
+exclusive,insert 1 row,8,1076581,1076581
+exclusive,insert 100-row batch,1,16414,1641400
+exclusive,insert 100-row batch,2,26192,2619266
+exclusive,insert 100-row batch,4,18560,1856000
+exclusive,insert 100-row batch,8,11034,1103400

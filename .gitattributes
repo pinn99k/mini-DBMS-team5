@@ -1,0 +1,4 @@
+# 컨테이너(Linux)에서 빌드·실행하므로 작업 트리도 LF로 고정
+* text=auto eol=lf
+*.png binary
+*.tbl binary

@@ -1,0 +1,3 @@
+minidb: listening on 0.0.0.0:18080 (workers=2, queue=1024, data=/data/bench/sql/data)
+minidb: shutting down
+minidb: stopped

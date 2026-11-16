@@ -1,0 +1,6 @@
+lines: 1000002
+bytes: 25677855
+last: {"ok":true,"rowCount":1000000}
+seconds: 0.176825
+server VmHWM before query: 24320 kB
+server VmHWM after query:  24448 kB
