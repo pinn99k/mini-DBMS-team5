@@ -525,19 +525,25 @@ public:
 
 ## 12. 동시성 모델
 
-P1·P2에는 락이 없다. P3에서 `Table` 안에 `std::shared_mutex` 하나를 추가한다 `[고정]`.
+P1·P2에는 락이 없다. P3에서 `Table` 안에 락 두 개를 둔다 (#19, 기준선의 "`shared_mutex` 하나"를 바꿈).
+
+- `mu_` (`std::shared_mutex`): **공개 상태**(`fileSize_`·`maxId_`·`rowCount_`·`index_`·쓰기 불가 플래그)를 지킨다. 읽는 쪽은 shared, 쓰는 쪽은 공개하는 순간에만 unique.
+- `writeMu_` (`std::mutex`): **쓰는 쪽끼리의 순서**. 인코딩·`pwrite`·실패 시 `ftruncate`는 이 락만 쥐고 한다. 읽는 쪽은 이 락을 모른다.
+- 규칙: 공개 상태를 바꾸는 건 두 락을 모두 쥔 쓰는 쪽뿐이다. 그래서 쓰는 쪽은 `writeMu_`만 쥐고도 공개 상태를 읽을 수 있다(동시에 바꾸는 쪽이 없음).
+- 이유: 기존에는 쓰는 쪽이 unique 락을 쥔 채 `pwrite`(시스템 콜, µs 단위)까지 해서, 읽는 쪽이 그동안 잠들었다. 혼합 부하에서 스레드를 늘리면 오히려 느려졌다. 측정과 분석은 `docs/lock-split.md`.
 
 | 상태 | 쓰기 | 읽기 |
 |---|---|---|
-| 파일 바이트 | insert (unique) | scan·findById (락 밖에서 pread) |
-| `fileSize_` | insert 성공 후 (unique) | scan 시작 시 한 번 (shared) |
-| `nextId_`, 쓰기 불가 플래그 | insert (unique) | insert만 |
-| `index_` | insert (unique) | findById는 트리 조회 동안만 (shared), 파일 읽기는 락 해제 후 |
+| 파일 바이트 | insert (`writeMu_`만) | scan·findById (락 밖에서 pread) |
+| `fileSize_`·`maxId_`·`rowCount_` | 공개 순간 (`writeMu_` + `mu_` unique) | scan 시작 시 한 번 등 (shared) |
+| 쓰기 불가 플래그 | 되돌리기 실패 시 (`writeMu_` + `mu_` unique) | insert(`writeMu_`)·`writable()`(shared) |
+| `index_` | 공개 순간 (`writeMu_` + `mu_` unique) | findById는 트리 조회 동안만 (shared), 파일 읽기는 락 해제 후 |
 | `Database` 테이블 목록 | 시작 시 한 번 | 이후 불변 → 락 없음 |
 
 락 밖에서 파일을 읽어도 안전한 이유:
 - **공개 순서** `[고정]`: 바이트 → `fileSize_` → `index_`. 읽는 쪽은 오프셋을 이 둘에서만 얻으므로, 아직 없는 바이트를 가리킬 수 없다.
 - 실패 시 자르기는 공개된 `fileSize_` 뒤쪽만 건드린다. 그 바이트를 본 읽기 쪽은 없다.
+- 같은 이유로 `pwrite` 자체도 `mu_` 밖에서 해도 된다. 쓰는 중인 바이트는 `fileSize_` 너머라 읽는 쪽이 보지 못하고, 다른 쓰는 쪽은 `writeMu_`에서 기다린다 (#19).
 - `pread`/`pwrite`는 위치를 공유하지 않으므로, 같은 fd를 여러 스레드가 써도 된다.
 - DELETE가 없어서 공개된 바이트는 바뀌지 않는다. DELETE를 넣으면 이 전제가 깨진다.
 - fsync 스레드는 `fsync(fd)`만 부른다. `pwrite`와 동시에 불러도 된다. fd는 fsync 스레드를 join한 뒤에 닫는다.
@@ -617,7 +623,7 @@ src/
   cli/      main.cpp  table_printer.*  dump.*
 tests/      모듈별 *_test.cpp, testutil/ (FaultyFileIO, 손상 파일 생성기, 임시 디렉터리)
 bench/      minidb_bench, results/                                       (P2)
-docs/       architecture.md  decisions.md  decisions-summary.md  refactoring.md  explain-log.md  quality-trend.md  assignment.md  bench.md  archive/
+docs/       architecture.md  decisions.md  decisions-summary.md  refactoring.md  explain-log.md  quality-trend.md  lock-split.md  assignment.md  bench.md  archive/
 ```
 
 ## 17. 마일스톤

@@ -3,7 +3,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <future>
 #include <random>
+#include <thread>
+#include <tuple>
 
 #include "common/bytes.h"
 #include "common/crc32.h"
@@ -239,6 +242,51 @@ TEST_F(TableTest, ScannerRejectsNonAscendingIdsLikeRecover) {
   EXPECT_EQ(r.at, frame::kFileHeaderSize);
   EXPECT_EQ(r.why, "ids are not strictly ascending");
   EXPECT_THROW(open(), StorageError);
+}
+
+// pwriteAll 안에서 멈추는 FileIO. 쓰기가 진행 중인 순간을 테스트에서 붙잡는다.
+class BlockingWriteIO : public PosixFileIO {
+ public:
+  std::atomic<bool> block{false};
+  std::promise<void> entered;
+  std::shared_future<void> release;
+  void pwriteAll(int fd, const void* buf, size_t n, uint64_t off) override {
+    if (block.exchange(false)) {
+      entered.set_value();
+      release.wait();
+    }
+    PosixFileIO::pwriteAll(fd, buf, n, off);
+  }
+};
+
+TEST_F(TableTest, ReadersDoNotWaitForWriterIo) {
+  // 쓰는 쪽이 pwrite 중이어도 읽는 쪽은 막히지 않는다. 아직 공개 안 된 행은 안 보인다 (decisions #19).
+  BlockingWriteIO io;
+  std::promise<void> releaseWriter;
+  io.release = releaseWriter.get_future().share();
+  auto t = open(io);
+  t->insert({user("kim", 1)});
+
+  io.block = true;
+  auto entered = io.entered.get_future();
+  std::thread writer([&] { t->insert({user("lee", 2)}); });
+  entered.wait();  // 쓰는 쪽이 pwriteAll 안에서 멈춰 있다
+
+  auto reader = std::async(std::launch::async, [&] {
+    return std::make_tuple(t->findById(1).has_value(), t->rowCount(), scanAll(*t).size(), t->maxId());
+  });
+  const bool done = reader.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  releaseWriter.set_value();
+  writer.join();
+
+  ASSERT_TRUE(done) << "reader blocked behind the writer's pwrite";
+  const auto [found, count, scanned, maxId] = reader.get();
+  EXPECT_TRUE(found);
+  EXPECT_EQ(count, 1u);
+  EXPECT_EQ(scanned, 1u);
+  EXPECT_EQ(maxId, 1);
+  EXPECT_EQ(t->rowCount(), 2u);
+  EXPECT_TRUE(t->findById(2).has_value());
 }
 
 TEST_F(TableTest, ShortFileGetsHeaderRewritten) {

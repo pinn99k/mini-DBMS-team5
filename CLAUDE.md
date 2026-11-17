@@ -15,6 +15,7 @@ C++17 mini DBMS (Krafton Jungle). P1 SQL/CLI + file storage → P2 in-memory B+t
 - `docs/refactoring.md` — post-scope candidates. Don't implement during P1–P3.
 - `docs/explain-log.md` — understanding checks. Add 1 row per delegated decision / AI principle the system relies on.
 - `docs/quality-trend.md` — phase-audit metrics, 1 row per phase end.
+- `docs/lock-split.md` — lock split (#19) analysis + before/after numbers. Raw data: `bench/results/lock_split.csv`.
 - `docs/archive/` — 2026-11-15 big design (briefs, old decisions). Frozen. History only; never cite as current.
 - `CHANGELOG.md` — start at first milestone; one entry per milestone.
 - Conflict: latest decisions row > architecture.md > archive. Code ≠ doc → fix one in the same commit.

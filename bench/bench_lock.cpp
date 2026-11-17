@@ -3,6 +3,8 @@
 // HTTP를 빼고 Table API를 직접 불러 락 효과만 본다.
 // minidb_bench_lock --dir /data/lockbench [--rows 100000] [--threads 1,2,4,8] [--ms 1500]
 
+#include <sys/resource.h>
+
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -76,6 +78,8 @@ int main(int argc, char** argv) {
 
   for (Workload w : {Workload::ReadOnly, Workload::Mixed90_10, Workload::WriteSingle, Workload::WriteBatch100}) {
     for (size_t n : threads) {
+      rusage ru0{};
+      getrusage(RUSAGE_SELF, &ru0);
       std::atomic<bool> stop{false};
       std::atomic<uint64_t> ops{0}, rowsWritten{0};
       std::vector<std::thread> ts;
@@ -100,9 +104,13 @@ int main(int argc, char** argv) {
       std::this_thread::sleep_for(std::chrono::milliseconds(ms));
       stop = true;
       for (auto& th : ts) th.join();
+      rusage ru1{};
+      getrusage(RUSAGE_SELF, &ru1);
       const double secs = static_cast<double>(ms) / 1000.0;
+      // 마지막 열: 작업 1,000개당 자발적 문맥 교환 (락을 기다리며 잠든 횟수의 근사)
+      const double csw = static_cast<double>(ru1.ru_nvcsw - ru0.ru_nvcsw) * 1000.0 / static_cast<double>(ops.load());
       std::cout << kVariant << ',' << name(w) << ',' << n << ',' << static_cast<uint64_t>(ops / secs) << ','
-                << static_cast<uint64_t>(rowsWritten / secs) << '\n';
+                << static_cast<uint64_t>(rowsWritten / secs) << ',' << csw << '\n';
     }
   }
   return 0;

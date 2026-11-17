@@ -134,7 +134,9 @@ void Table::saveAndTruncateTail(uint64_t at, uint64_t size) {
 
 std::vector<int64_t> Table::insert(const std::vector<std::vector<Value>>& rows) {
   if (rows.empty()) throw StorageError("insert: no rows");
-  WriteLock lock(mu_);
+  // 쓰는 쪽끼리는 writeMu_로 줄 선다. fileSize_·maxId_·writable_을 바꾸는 건 이 락을 쥔 쓰는 쪽뿐이라
+  // 여기서는 mu_ 없이 읽어도 된다. 읽는 쪽은 fileSize_ 너머를 안 읽으므로 pwrite 중인 바이트를 못 본다.
+  std::lock_guard<std::mutex> writer(writeMu_);
   if (!writable_) {
     throw StorageError("table '" + name_ + "' is read-only: an earlier write could not be rolled back");
   }
@@ -167,6 +169,7 @@ std::vector<int64_t> Table::insert(const std::vector<std::vector<Value>>& rows) 
     try {
       io_.ftruncate(fd_, fileSize_);
     } catch (const StorageError& e2) {
+      WriteLock publish(mu_);
       writable_ = false;  // decisions #4
       throw StorageError(std::string("write failed (") + e.what() + ") and rollback failed (" + e2.what() +
                          "); table '" + name_ + "' is now read-only");
@@ -174,7 +177,8 @@ std::vector<int64_t> Table::insert(const std::vector<std::vector<Value>>& rows) 
     throw;
   }
 
-  // 공개 순서: fileSize → maxId → index
+  // 공개: 읽는 쪽이 기다리는 건 이 구간(인덱스 삽입)뿐이다. 공개 순서: fileSize → maxId → index
+  WriteLock publish(mu_);
   const uint64_t frameStart = fileSize_;
   fileSize_ += bytes.size();
   maxId_ += n;

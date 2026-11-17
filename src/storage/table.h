@@ -5,6 +5,11 @@
 //
 // 공개 순서 (§12): 파일 바이트 → fileSize_ → index_. 읽는 쪽은 오프셋을 이 둘에서만 얻으므로
 // 락을 놓은 뒤에 pread해도 아직 없는 바이트를 가리킬 수 없다.
+//
+// 락 두 개 (§12, decisions #19):
+//   writeMu_ — 쓰는 쪽끼리의 순서. 인코딩·pwrite·자르기는 이것만 쥐고 한다.
+//   mu_      — 공개 상태(fileSize_·maxId_·rowCount_·index_·writable_). 쓰는 쪽은 공개하는 순간에만 독점으로 잡는다.
+//   공개 상태를 바꾸는 건 두 락을 모두 쥔 쓰는 쪽뿐이다. 그래서 쓰는 쪽은 writeMu_만으로 그 값을 읽어도 된다.
 
 #include <atomic>
 #include <cstdint>
@@ -82,6 +87,7 @@ class Table {
   const int fd_;
 
   mutable std::shared_mutex mu_;
+  std::mutex writeMu_;  // 쓰는 쪽끼리의 순서. pwrite는 이 락만 쥐고 한다
   uint64_t fileSize_ = 0;
   int64_t maxId_ = 0;
   uint64_t rowCount_ = 0;

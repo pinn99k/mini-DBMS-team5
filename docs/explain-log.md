@@ -25,3 +25,7 @@
 - 2026-11-16 | keep-alive 연결 = 워커 하나 — 워커 4개·클라이언트 8개면 무엇이 몇 초 기다리나 (architecture §19) | 대기 |
 - 2026-11-16 | `TCP_NODELAY` — 응답을 두 번에 나눠 쓰면 왜 요청마다 40 ms가 붙나 (AI, #14) | 대기 |
 - 2026-11-16 | `docs/bench.md` §5 — 락 밖에서 pread하면 shared_mutex가 이득이 없어지는 이유 | 대기 |
+
+## 락 분리 (#19)
+- 2026-11-17 | `src/storage/table.cpp` `Table::insert` — `pwrite`를 `mu_` 밖에서 해도 읽는 쪽이 반쯤 쓴 프레임을 못 보는 이유 | 대기 |
+- 2026-11-17 | `src/storage/table.cpp` `Table::insert` — 쓰는 쪽이 `writeMu_`만 쥐고 `maxId_`·`fileSize_`를 읽어도 데이터 레이스가 아닌 이유 | 대기 |
