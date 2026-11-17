@@ -1,11 +1,13 @@
 #pragma once
 
-// 메모리 B+ 트리: id(i64) → record offset(u64). 유일 키, 삭제·범위 질의 없음 (architecture §9).
+// 메모리 B+ 트리: id(i64) → record offset(u64). 유일 키 (architecture §9).
+// 삽입·조회·값 바꾸기·삭제·키 범위 순회.
 // - 노드 안 고정 크기 배열, 키·값 배열 분리(SoA). 노드 안 std::vector 금지.
 // - 리프/내부 노드는 별도 구조체 + 공통 헤더(isLeaf). 가상 함수 없음.
 //   그래서 unique_ptr는 isLeaf를 보고 올바른 타입으로 delete하는 deleter를 쓴다.
 // - 분할은 bottom-up: 내려간 경로를 스택에 기록, 부모 포인터 없음. 반반 분할.
 //   리프 분할 = copy-up, 내부 분할 = push-up.
+// - 삭제도 bottom-up: 모자라면 형제에게 빌리고(내부 노드는 회전), 안 되면 병합. 루트가 비면 높이 - 1 (§9.6).
 // - 배열은 Cap+1 크기: 분할 직전에 Cap+1개를 잠깐 담기 위해서다.
 // 스레드 안전하지 않다. Table의 락이 보호한다.
 
@@ -39,6 +41,12 @@ class BPlusTree {
   // 이미 있는 키면 false.
   bool insert(int64_t key, uint64_t value);
   std::optional<uint64_t> find(int64_t key) const;
+  // 있는 키의 값을 바꾼다. 없으면 false.
+  bool assign(int64_t key, uint64_t value);
+  // 없는 키면 false.
+  bool erase(int64_t key);
+  // 키가 [from, to]인 (key, value)를 키 순서로 최대 max개 out 뒤에 붙인다. 붙인 개수를 돌려준다.
+  size_t range(int64_t from, int64_t to, size_t max, std::vector<std::pair<int64_t, uint64_t>>& out) const;
   size_t size() const { return size_; }
   int height() const { return height_; }
   bool validate(std::string* why = nullptr) const;
@@ -66,6 +74,10 @@ class BPlusTree {
     int64_t keys[Cap + 1];
     NodePtr children[Cap + 2];  // count + 1개 사용
   };
+  struct Step {  // 내려간 경로 한 칸: 노드와 따라간 자식 번호
+    Internal* node;
+    int idx;
+  };
 
   static int childIndex(const Internal* in, int64_t key) {
     // 경계값 = 오른쪽 서브트리의 최소 키 → key == 경계값이면 오른쪽으로
@@ -75,6 +87,15 @@ class BPlusTree {
     while (!n->isLeaf) n = static_cast<const Internal*>(n)->children[0].get();
     return static_cast<const Leaf*>(n)->keys[0];
   }
+  const Leaf* leafFor(int64_t key) const {
+    const Node* n = root_.get();
+    if (!n) return nullptr;
+    while (!n->isLeaf) {
+      const auto* in = static_cast<const Internal*>(n);
+      n = in->children[childIndex(in, key)].get();
+    }
+    return static_cast<const Leaf*>(n);
+  }
   const Leaf* leftmostLeaf() const {
     const Node* n = root_.get();
     while (n && !n->isLeaf) n = static_cast<const Internal*>(n)->children[0].get();
@@ -82,6 +103,10 @@ class BPlusTree {
   }
   bool checkNode(const Node* n, int depth, bool isRoot, const int64_t* lo, const int64_t* hi,
                  int& leafDepth, std::string& why) const;
+  static void removeChild(Internal* p, int keyIdx, int childIdx);
+  static void rebalanceLeaf(Internal* p, int i);
+  static void rebalanceInternal(Internal* p, int i);
+  void replaceSeparator(int64_t removed);
 
   NodePtr root_;
   size_t size_ = 0;
@@ -127,16 +152,187 @@ void BPlusTree<Cap>::NodeDeleter::operator()(Node* n) const noexcept {
 
 template <int Cap>
 std::optional<uint64_t> BPlusTree<Cap>::find(int64_t key) const {
-  const Node* n = root_.get();
-  if (!n) return std::nullopt;
-  while (!n->isLeaf) {
-    const auto* in = static_cast<const Internal*>(n);
-    n = in->children[childIndex(in, key)].get();
-  }
-  const auto* lf = static_cast<const Leaf*>(n);
+  const Leaf* lf = leafFor(key);
+  if (!lf) return std::nullopt;
   const int64_t* p = std::lower_bound(lf->keys, lf->keys + lf->count, key);
   if (p != lf->keys + lf->count && *p == key) return lf->values[p - lf->keys];
   return std::nullopt;
+}
+
+template <int Cap>
+bool BPlusTree<Cap>::assign(int64_t key, uint64_t value) {
+  auto* lf = const_cast<Leaf*>(leafFor(key));  // this가 const가 아니므로 안전
+  if (!lf) return false;
+  const int64_t* p = std::lower_bound(lf->keys, lf->keys + lf->count, key);
+  if (p == lf->keys + lf->count || *p != key) return false;
+  lf->values[p - lf->keys] = value;
+  return true;
+}
+
+template <int Cap>
+size_t BPlusTree<Cap>::range(int64_t from, int64_t to, size_t max,
+                             std::vector<std::pair<int64_t, uint64_t>>& out) const {
+  const Leaf* lf = leafFor(from);
+  if (!lf) return 0;
+  size_t added = 0;
+  int i = static_cast<int>(std::lower_bound(lf->keys, lf->keys + lf->count, from) - lf->keys);
+  for (; lf && added < max; lf = lf->next, i = 0) {
+    for (; i < lf->count && added < max; ++i) {
+      if (lf->keys[i] > to) return added;
+      out.emplace_back(lf->keys[i], lf->values[i]);
+      ++added;
+    }
+  }
+  return added;
+}
+
+// ---- 삭제 (architecture §9.6) ----------------------------------------------------------------
+
+// 부모 p에서 경계값 keys[keyIdx]와 자식 children[childIdx]를 뺀다. 빠진 자식은 소멸한다.
+template <int Cap>
+void BPlusTree<Cap>::removeChild(Internal* p, int keyIdx, int childIdx) {
+  std::move(p->keys + keyIdx + 1, p->keys + p->count, p->keys + keyIdx);
+  for (int c = childIdx; c < p->count; ++c) p->children[c] = std::move(p->children[c + 1]);
+  p->children[p->count].reset();
+  --p->count;
+}
+
+// p의 i번째 자식(리프)이 최소 키 수보다 적다. 빌리기 → 안 되면 병합.
+// 빌릴 수 없다는 것은 형제가 정확히 최소라는 뜻 → 병합해도 2*min - 1 <= Cap.
+template <int Cap>
+void BPlusTree<Cap>::rebalanceLeaf(Internal* p, int i) {
+  auto* lf = static_cast<Leaf*>(p->children[i].get());
+  auto* left = i > 0 ? static_cast<Leaf*>(p->children[i - 1].get()) : nullptr;
+  auto* right = i < p->count ? static_cast<Leaf*>(p->children[i + 1].get()) : nullptr;
+
+  if (left && left->count > kMinLeafKeys) {  // 왼쪽 마지막 키를 내 앞으로
+    std::move_backward(lf->keys, lf->keys + lf->count, lf->keys + lf->count + 1);
+    std::move_backward(lf->values, lf->values + lf->count, lf->values + lf->count + 1);
+    --left->count;
+    lf->keys[0] = left->keys[left->count];
+    lf->values[0] = left->values[left->count];
+    ++lf->count;
+    p->keys[i - 1] = lf->keys[0];
+    return;
+  }
+  if (right && right->count > kMinLeafKeys) {  // 오른쪽 첫 키를 내 뒤로
+    lf->keys[lf->count] = right->keys[0];
+    lf->values[lf->count] = right->values[0];
+    ++lf->count;
+    std::move(right->keys + 1, right->keys + right->count, right->keys);
+    std::move(right->values + 1, right->values + right->count, right->values);
+    --right->count;
+    p->keys[i] = right->keys[0];
+    return;
+  }
+  // 병합: 오른쪽 리프를 왼쪽 리프 뒤에 붙이고 오른쪽을 부모에서 뺀다
+  Leaf* dst = left ? left : lf;
+  Leaf* src = left ? lf : right;
+  std::copy(src->keys, src->keys + src->count, dst->keys + dst->count);
+  std::copy(src->values, src->values + src->count, dst->values + dst->count);
+  dst->count += src->count;
+  dst->next = src->next;
+  const int srcIdx = left ? i : i + 1;
+  removeChild(p, srcIdx - 1, srcIdx);
+}
+
+// p의 i번째 자식(내부 노드)이 최소 키 수보다 적다. 회전으로 빌리기 → 안 되면 병합.
+// 병합 = 왼쪽 + 부모 경계값 + 오른쪽 → min + (min - 1) + 1 = 2*min <= Cap.
+template <int Cap>
+void BPlusTree<Cap>::rebalanceInternal(Internal* p, int i) {
+  auto* in = static_cast<Internal*>(p->children[i].get());
+  auto* left = i > 0 ? static_cast<Internal*>(p->children[i - 1].get()) : nullptr;
+  auto* right = i < p->count ? static_cast<Internal*>(p->children[i + 1].get()) : nullptr;
+
+  if (left && left->count > kMinInternalKeys) {  // 오른쪽 회전: 부모 경계값이 내려오고 왼쪽 끝 키가 올라감
+    std::move_backward(in->keys, in->keys + in->count, in->keys + in->count + 1);
+    for (int c = in->count + 1; c > 0; --c) in->children[c] = std::move(in->children[c - 1]);
+    in->keys[0] = p->keys[i - 1];
+    in->children[0] = std::move(left->children[left->count]);
+    p->keys[i - 1] = left->keys[left->count - 1];
+    --left->count;
+    ++in->count;
+    return;
+  }
+  if (right && right->count > kMinInternalKeys) {  // 왼쪽 회전
+    in->keys[in->count] = p->keys[i];
+    in->children[in->count + 1] = std::move(right->children[0]);
+    ++in->count;
+    p->keys[i] = right->keys[0];
+    std::move(right->keys + 1, right->keys + right->count, right->keys);
+    for (int c = 0; c < right->count; ++c) right->children[c] = std::move(right->children[c + 1]);
+    --right->count;
+    return;
+  }
+  Internal* dst = left ? left : in;
+  Internal* src = left ? in : right;
+  const int srcIdx = left ? i : i + 1;
+  dst->keys[dst->count] = p->keys[srcIdx - 1];
+  std::copy(src->keys, src->keys + src->count, dst->keys + dst->count + 1);
+  for (int c = 0; c <= src->count; ++c) dst->children[dst->count + 1 + c] = std::move(src->children[c]);
+  dst->count += 1 + src->count;
+  removeChild(p, srcIdx - 1, srcIdx);
+}
+
+// 지운 키가 경계값으로 남아 있으면(그 키가 어떤 서브트리의 최솟값이었음) 오른쪽 서브트리의 새 최솟값으로.
+// 경계값은 자기 노드의 범위 안에 있으므로 그런 경계값은 removed의 탐색 경로에 많아야 하나다.
+template <int Cap>
+void BPlusTree<Cap>::replaceSeparator(int64_t removed) {
+  Node* n = root_.get();
+  while (n && !n->isLeaf) {
+    auto* in = static_cast<Internal*>(n);
+    const int64_t* p = std::lower_bound(in->keys, in->keys + in->count, removed);
+    if (p != in->keys + in->count && *p == removed) {
+      const auto k = static_cast<int>(p - in->keys);
+      in->keys[k] = minKey(in->children[k + 1].get());
+      return;
+    }
+    n = in->children[childIndex(in, removed)].get();
+  }
+}
+
+template <int Cap>
+bool BPlusTree<Cap>::erase(int64_t key) {
+  if (!root_) return false;
+  Step path[64];
+  int depth = 0;
+  Node* n = root_.get();
+  while (!n->isLeaf) {
+    auto* in = static_cast<Internal*>(n);
+    const int i = childIndex(in, key);
+    path[depth++] = Step{in, i};
+    n = in->children[i].get();
+  }
+
+  auto* lf = static_cast<Leaf*>(n);
+  const int pos = static_cast<int>(std::lower_bound(lf->keys, lf->keys + lf->count, key) - lf->keys);
+  if (pos == lf->count || lf->keys[pos] != key) return false;
+  std::move(lf->keys + pos + 1, lf->keys + lf->count, lf->keys + pos);
+  std::move(lf->values + pos + 1, lf->values + lf->count, lf->values + pos);
+  --lf->count;
+  --size_;
+
+  if (depth == 0) {  // 리프가 루트: 최소 키 수 예외
+    if (lf->count == 0) {
+      root_.reset();
+      height_ = 0;
+    }
+    return true;
+  }
+  if (lf->count < kMinLeafKeys) {
+    rebalanceLeaf(path[depth - 1].node, path[depth - 1].idx);
+    // 병합으로 부모가 모자라면 위로. 루트(path[0])는 예외라 d > 0까지만
+    for (int d = depth - 1; d > 0 && path[d].node->count < kMinInternalKeys; --d) {
+      rebalanceInternal(path[d - 1].node, path[d - 1].idx);
+    }
+    if (root_->count == 0) {  // 내부 루트의 키가 0개 → 유일한 자식이 루트
+      NodePtr child = std::move(static_cast<Internal*>(root_.get())->children[0]);
+      root_ = std::move(child);
+      --height_;
+    }
+  }
+  replaceSeparator(key);
+  return true;
 }
 
 template <int Cap>
@@ -152,10 +348,6 @@ bool BPlusTree<Cap>::insert(int64_t key, uint64_t value) {
     return true;
   }
 
-  struct Step {
-    Internal* node;
-    int idx;
-  };
   Step path[64];
   int depth = 0;
   Node* n = root_.get();
