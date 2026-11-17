@@ -1,0 +1,241 @@
+phase,variant,workload,threads,ops_per_s,rows_per_s,csw_per_1k_ops
+base,shared,read-only (findById),1,725458,0,0.00413532
+base,shared,read-only (findById),2,1191260,0,0.00167889
+base,shared,read-only (findById),4,1464894,0,0.00204793
+base,shared,mixed 90% read / 10% insert,1,862789,86367,0.00231806
+base,shared,mixed 90% read / 10% insert,2,482978,48502,85.7741
+base,shared,mixed 90% read / 10% insert,4,534962,53739,114.64
+base,shared,insert 1 row,1,1123692,1123692,0.00177985
+base,shared,insert 1 row,2,666475,666475,81.9461
+base,shared,insert 1 row,4,1036147,1036147,41.5115
+base,shared,insert 100-row batch,1,40083,4008300,0.174638
+base,shared,insert 100-row batch,2,24204,2420400,498.265
+base,shared,insert 100-row batch,4,22952,2295200,504.226
+base,exclusive,read-only (findById),1,1155360,0,0.00173106
+base,exclusive,read-only (findById),2,1269855,0,19.2628
+base,exclusive,read-only (findById),4,1233862,0,21.0494
+base,exclusive,mixed 90% read / 10% insert,1,852832,85356,0.00234513
+base,exclusive,mixed 90% read / 10% insert,2,837726,83986,78.417
+base,exclusive,mixed 90% read / 10% insert,4,810686,81459,79.1873
+base,exclusive,insert 1 row,1,1149825,1149825,0.00260909
+base,exclusive,insert 1 row,2,647290,647290,92.6694
+base,exclusive,insert 1 row,4,872646,872646,30.8155
+base,exclusive,insert 100-row batch,1,26525,2652500,0.113101
+base,exclusive,insert 100-row batch,2,22451,2245100,323.727
+base,exclusive,insert 100-row batch,4,20565,2056500,264.527
+split,shared,read-only (findById),1,1099120,0,0.00181964
+split,shared,read-only (findById),2,1573098,0,0.00127138
+split,shared,read-only (findById),4,1563364,0,0.00191894
+split,shared,mixed 90% read / 10% insert,1,776274,77742,0.00257641
+split,shared,mixed 90% read / 10% insert,2,914896,91750,19.7859
+split,shared,mixed 90% read / 10% insert,4,1137111,113935,27.6692
+split,shared,insert 1 row,1,1001939,1001939,0.00299419
+split,shared,insert 1 row,2,529498,529498,58.7405
+split,shared,insert 1 row,4,815410,815410,30.4215
+split,shared,insert 100-row batch,1,32398,3239800,0.185197
+split,shared,insert 100-row batch,2,27612,2761200,661.777
+split,shared,insert 100-row batch,4,27424,2742400,385.575
+split,exclusive,read-only (findById),1,1004070,0,0.00199189
+split,exclusive,read-only (findById),2,1378157,0,18.0001
+split,exclusive,read-only (findById),4,1543626,0,14.7879
+split,exclusive,mixed 90% read / 10% insert,1,1010874,101283,0.00197849
+split,exclusive,mixed 90% read / 10% insert,2,1145206,114644,27.4972
+split,exclusive,mixed 90% read / 10% insert,4,1213832,121684,34.0187
+split,exclusive,insert 1 row,1,1178431,1178431,0.00169717
+split,exclusive,insert 1 row,2,595531,595531,70.9098
+split,exclusive,insert 1 row,4,874308,874308,31.2155
+split,exclusive,insert 100-row batch,1,34430,3443000,0.116178
+split,exclusive,insert 100-row batch,2,23431,2343100,444.838
+split,exclusive,insert 100-row batch,4,19815,1981500,295.786
+base,shared,read-only (findById),1,996329,0,0.00200737
+base,shared,read-only (findById),2,1391693,0,0.0014371
+base,shared,read-only (findById),4,1361086,0,0.00146941
+base,shared,mixed 90% read / 10% insert,1,830519,83194,0.00240813
+base,shared,mixed 90% read / 10% insert,2,359997,36085,102.145
+base,shared,mixed 90% read / 10% insert,4,475733,47799,99.6441
+base,shared,insert 1 row,1,940230,940230,0.00319071
+base,shared,insert 1 row,2,600692,600692,83.214
+base,shared,insert 1 row,4,714020,714020,31.5411
+base,shared,insert 100-row batch,1,28675,2867500,0.104621
+base,shared,insert 100-row batch,2,31585,3158500,629.571
+base,shared,insert 100-row batch,4,26026,2602600,300.661
+base,exclusive,read-only (findById),1,1303009,0,0.00153491
+base,exclusive,read-only (findById),2,1130544,0,25.0251
+base,exclusive,read-only (findById),4,1009312,0,35.4231
+base,exclusive,mixed 90% read / 10% insert,1,828941,83020,0.00241272
+base,exclusive,mixed 90% read / 10% insert,2,965688,96804,67.6999
+base,exclusive,mixed 90% read / 10% insert,4,874757,87857,62.0732
+base,exclusive,insert 1 row,1,789023,789023,0.00506956
+base,exclusive,insert 1 row,2,579108,579108,74.5284
+base,exclusive,insert 1 row,4,1038370,1038370,32.6974
+base,exclusive,insert 100-row batch,1,38940,3894000,0.128403
+base,exclusive,insert 100-row batch,2,20984,2098400,398.685
+base,exclusive,insert 100-row batch,4,30724,3072400,405.025
+split,shared,read-only (findById),1,819387,0,0.00244085
+split,shared,read-only (findById),2,1314127,0,0.00228288
+split,shared,read-only (findById),4,1593521,0,0.00188262
+split,shared,mixed 90% read / 10% insert,1,1066547,106783,0.00187521
+split,shared,mixed 90% read / 10% insert,2,769779,77310,21.8011
+split,shared,mixed 90% read / 10% insert,4,860479,86614,28.4376
+split,shared,insert 1 row,1,1323430,1323430,0.00151122
+split,shared,insert 1 row,2,585719,585719,58.861
+split,shared,insert 1 row,4,973456,973456,27.0623
+split,shared,insert 100-row batch,1,32659,3265900,0.122478
+split,shared,insert 100-row batch,2,26013,2601300,703.725
+split,shared,insert 100-row batch,4,22241,2224100,322.602
+split,exclusive,read-only (findById),1,697701,0,0.00286656
+split,exclusive,read-only (findById),2,868278,0,36.7486
+split,exclusive,read-only (findById),4,890828,0,30.8724
+split,exclusive,mixed 90% read / 10% insert,1,556912,55941,0.00359123
+split,exclusive,mixed 90% read / 10% insert,2,627688,63169,22.4714
+split,exclusive,mixed 90% read / 10% insert,4,538076,54068,45.159
+split,exclusive,insert 1 row,1,736250,736250,0.00271647
+split,exclusive,insert 1 row,2,551954,551954,26.8011
+split,exclusive,insert 1 row,4,705480,705480,12.8749
+split,exclusive,insert 100-row batch,1,28676,2867600,0.139489
+split,exclusive,insert 100-row batch,2,22753,2275300,564.057
+split,exclusive,insert 100-row batch,4,28525,2852500,477.055
+base,shared,read-only (findById),1,1285194,0,0.00155619
+base,shared,read-only (findById),2,1454494,0,0.00137505
+base,shared,read-only (findById),4,1144732,0,0.0026207
+base,shared,mixed 90% read / 10% insert,1,887518,88866,0.00225348
+base,shared,mixed 90% read / 10% insert,2,417922,42004,83.1399
+base,shared,mixed 90% read / 10% insert,4,435285,43846,118.118
+base,shared,insert 1 row,1,968939,968939,0.00309617
+base,shared,insert 1 row,2,501646,501646,26.2037
+base,shared,insert 1 row,4,608254,608254,11.6152
+base,shared,insert 100-row batch,1,23908,2390800,0.083654
+base,shared,insert 100-row batch,2,26207,2620700,602.358
+base,shared,insert 100-row batch,4,18648,1864800,220.399
+base,exclusive,read-only (findById),1,740949,0,0.00269924
+base,exclusive,read-only (findById),2,768659,0,38.1352
+base,exclusive,read-only (findById),4,915719,0,34.136
+base,exclusive,mixed 90% read / 10% insert,1,949312,94970,0.00210679
+base,exclusive,mixed 90% read / 10% insert,2,589146,59138,76.7721
+base,exclusive,mixed 90% read / 10% insert,4,807572,81161,64.5961
+base,exclusive,insert 1 row,1,1034672,1034672,0.00193298
+base,exclusive,insert 1 row,2,554605,554605,63.6976
+base,exclusive,insert 1 row,4,859188,859188,12.4944
+base,exclusive,insert 100-row batch,1,22781,2278100,0.175585
+base,exclusive,insert 100-row batch,2,14592,1459200,255.482
+base,exclusive,insert 100-row batch,4,15526,1552600,167.976
+split,shared,read-only (findById),1,738641,0,0.00270768
+split,shared,read-only (findById),2,1355139,0,0.00147586
+split,shared,read-only (findById),4,1191008,0,0.00167925
+split,shared,mixed 90% read / 10% insert,1,606814,60895,0.0032959
+split,shared,mixed 90% read / 10% insert,2,600286,60340,12.5174
+split,shared,mixed 90% read / 10% insert,4,600858,60428,20.8052
+split,shared,insert 1 row,1,1003631,1003631,0.00199276
+split,shared,insert 1 row,2,573346,573346,75.4867
+split,shared,insert 1 row,4,995624,995624,26.3111
+split,shared,insert 100-row batch,1,33780,3378000,0.118413
+split,shared,insert 100-row batch,2,29616,2961600,573.609
+split,shared,insert 100-row batch,4,26037,2603700,218.612
+split,exclusive,read-only (findById),1,763521,0,0.00261944
+split,exclusive,read-only (findById),2,923414,0,46.0249
+split,exclusive,read-only (findById),4,711150,0,44.6052
+split,exclusive,mixed 90% read / 10% insert,1,685880,68769,0.00291596
+split,exclusive,mixed 90% read / 10% insert,2,607444,60973,46.1919
+split,exclusive,mixed 90% read / 10% insert,4,537152,53931,36.0438
+split,exclusive,insert 1 row,1,738031,738031,0.00270991
+split,exclusive,insert 1 row,2,619634,619634,43.0012
+split,exclusive,insert 1 row,4,645918,645918,14.7186
+split,exclusive,insert 100-row batch,1,21769,2176900,0.229684
+split,exclusive,insert 100-row batch,2,21198,2119800,235.117
+split,exclusive,insert 100-row batch,4,27453,2745300,329.946
+base,shared,read-only (findById),1,1239087,0,0.00161409
+base,shared,read-only (findById),2,1364083,0,0.00146619
+base,shared,read-only (findById),4,1447568,0,0.00345407
+base,shared,mixed 90% read / 10% insert,1,1053478,105481,0.00189847
+base,shared,mixed 90% read / 10% insert,2,543930,54558,97.018
+base,shared,mixed 90% read / 10% insert,4,493278,49512,85.1285
+base,shared,insert 1 row,1,807869,807869,0.00247565
+base,shared,insert 1 row,2,539643,539643,47.4703
+base,shared,insert 1 row,4,630524,630524,27.2155
+base,shared,insert 100-row batch,1,19558,1955800,0.20452
+base,shared,insert 100-row batch,2,23199,2319900,385.663
+base,shared,insert 100-row batch,4,24690,2469000,180.397
+base,exclusive,read-only (findById),1,1212441,0,0.00164956
+base,exclusive,read-only (findById),2,745482,0,15.3833
+base,exclusive,read-only (findById),4,879228,0,31.9599
+base,exclusive,mixed 90% read / 10% insert,1,740772,74278,0.00269989
+base,exclusive,mixed 90% read / 10% insert,2,554518,55643,79.5862
+base,exclusive,mixed 90% read / 10% insert,4,752378,75536,84.7048
+base,exclusive,insert 1 row,1,1135203,1135203,0.0017618
+base,exclusive,insert 1 row,2,619696,619696,88.3143
+base,exclusive,insert 1 row,4,830508,830508,25.0112
+base,exclusive,insert 100-row batch,1,31445,3144500,0.0954047
+base,exclusive,insert 100-row batch,2,27093,2709300,594.286
+base,exclusive,insert 100-row batch,4,18422,1842200,373.846
+split,shared,read-only (findById),1,867563,0,0.00230531
+split,shared,read-only (findById),2,1774185,0,0.00112728
+split,shared,read-only (findById),4,2001616,0,0.00149879
+split,shared,mixed 90% read / 10% insert,1,1145891,114682,0.00174537
+split,shared,mixed 90% read / 10% insert,2,770757,77370,21.3816
+split,shared,mixed 90% read / 10% insert,4,1044325,104740,20.6076
+split,shared,insert 1 row,1,1035419,1035419,0.00193159
+split,shared,insert 1 row,2,528061,528061,71.6092
+split,shared,insert 1 row,4,839255,839255,37.9491
+split,shared,insert 100-row batch,1,26311,2631100,0.152028
+split,shared,insert 100-row batch,2,23401,2340100,632.537
+split,shared,insert 100-row batch,4,22125,2212500,335.819
+split,exclusive,read-only (findById),1,774662,0,0.00258177
+split,exclusive,read-only (findById),2,1359246,0,21.5568
+split,exclusive,read-only (findById),4,968054,0,25.1174
+split,exclusive,mixed 90% read / 10% insert,1,1013506,101559,0.00197335
+split,exclusive,mixed 90% read / 10% insert,2,914433,91706,36.3624
+split,exclusive,mixed 90% read / 10% insert,4,802115,80577,41.9715
+split,exclusive,insert 1 row,1,962646,962646,0.00207761
+split,exclusive,insert 1 row,2,620893,620893,73.4523
+split,exclusive,insert 1 row,4,1007511,1007511,31.3237
+split,exclusive,insert 100-row batch,1,41818,4181800,0.0956526
+split,exclusive,insert 100-row batch,2,29932,2993200,619.103
+split,exclusive,insert 100-row batch,4,27552,2755200,392.349
+base,shared,read-only (findById),1,754430,0,0.00265101
+base,shared,read-only (findById),2,1567029,0,0.0012763
+base,shared,read-only (findById),4,1144086,0,0.00174812
+base,shared,mixed 90% read / 10% insert,1,893300,89403,0.00223889
+base,shared,mixed 90% read / 10% insert,2,472522,47443,79.5603
+base,shared,mixed 90% read / 10% insert,4,458697,46154,89.8872
+base,shared,insert 1 row,1,861093,861093,0.00348394
+base,shared,insert 1 row,2,605808,605808,32.9246
+base,shared,insert 1 row,4,972541,972541,22.7918
+base,shared,insert 100-row batch,1,31860,3186000,0.125549
+base,shared,insert 100-row batch,2,23200,2320000,348.19
+base,shared,insert 100-row batch,4,20115,2011500,171.812
+base,exclusive,read-only (findById),1,580620,0,0.00344459
+base,exclusive,read-only (findById),2,580117,0,29.301
+base,exclusive,read-only (findById),4,607706,0,20.4095
+base,exclusive,mixed 90% read / 10% insert,1,622819,62519,0.00321121
+base,exclusive,mixed 90% read / 10% insert,2,606460,60902,69.7787
+base,exclusive,mixed 90% read / 10% insert,4,605389,60815,35.967
+base,exclusive,insert 1 row,1,837597,837597,0.00358167
+base,exclusive,insert 1 row,2,634741,634741,42.5811
+base,exclusive,insert 1 row,4,784421,784421,23.3918
+base,exclusive,insert 100-row batch,1,23677,2367700,0.126705
+base,exclusive,insert 100-row batch,2,22572,2257200,234.627
+base,exclusive,insert 100-row batch,4,21076,2107600,236.383
+split,shared,read-only (findById),1,927313,0,0.00215677
+split,shared,read-only (findById),2,1454013,0,0.0013755
+split,shared,read-only (findById),4,1451345,0,0.00206705
+split,shared,mixed 90% read / 10% insert,1,567185,56927,0.00352619
+split,shared,mixed 90% read / 10% insert,2,711119,71428,11.188
+split,shared,mixed 90% read / 10% insert,4,1222694,122599,18.9532
+split,shared,insert 1 row,1,988413,988413,0.00303517
+split,shared,insert 1 row,2,529860,529860,61.001
+split,shared,insert 1 row,4,884979,884979,34.0121
+split,shared,insert 100-row batch,1,43371,4337100,0.0691706
+split,shared,insert 100-row batch,2,31252,3125200,503.264
+split,shared,insert 100-row batch,4,29357,2935700,452.362
+split,exclusive,read-only (findById),1,1207468,0,0.00165636
+split,exclusive,read-only (findById),2,1285364,0,15.8663
+split,exclusive,read-only (findById),4,1307149,0,12.9694
+split,exclusive,mixed 90% read / 10% insert,1,909715,91021,0.00219849
+split,exclusive,mixed 90% read / 10% insert,2,794672,79754,38.3567
+split,exclusive,mixed 90% read / 10% insert,4,1209260,121349,26.8668
+split,exclusive,insert 1 row,1,1124274,1124274,0.00177893
+split,exclusive,insert 1 row,2,477236,477236,61.6278
+split,exclusive,insert 1 row,4,785271,785271,30.1399
+split,exclusive,insert 100-row batch,1,34316,3431600,0.0874228
+split,exclusive,insert 100-row batch,2,24222,2422200,675.213
+split,exclusive,insert 100-row batch,4,28527,2852700,381.463

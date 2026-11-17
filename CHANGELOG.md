@@ -2,6 +2,14 @@
 
 마일스톤 단위로 덧붙인다. 설계 근거는 `docs/architecture.md`, 결정 이유는 `docs/decisions.md`.
 
+## 0.1.2 — 2026-11-17 (락 분리)
+
+- **락 분리**(#19): `Table`에 쓰는 쪽끼리의 순서용 `writeMu_`를 더하고, 인코딩·`pwrite`·`ftruncate`는 그 락만 쥐고 한다. `shared_mutex`는 공개 순간(`fileSize_`·`index_` 갱신)에만 독점으로 잡는다. 혼합 부하(읽기 90%) 2스레드 473k → 770k ops/s(+63%), 락 때문에 잠드는 횟수 작업 1,000개당 86 → 20회. 읽기 전용·쓰기 전용은 노이즈 범위 안에서 그대로.
+- 회귀 테스트 `ReadersDoNotWaitForWriterIo`: 쓰는 쪽을 `pwrite` 안에서 멈춰 두고 읽기가 막히지 않는지 본다. 수정 전 코드에서 실패함을 확인했다.
+- `minidb_bench_lock`에 "작업 1,000개당 자발적 문맥 교환" 열을 추가했다.
+- `bench.md` §5의 "shared_mutex가 이기지 못한다"는 1회 측정의 노이즈였다. 정정을 달았다(5회 반복하면 읽기 전용 2스레드에서 shared가 약 1.8배 빠름).
+- 분석 문서 `docs/lock-split.md`, 원자료 `bench/results/lock_split.csv`.
+
 ## 0.1.1 — 2026-11-17 (리팩터링 1차)
 
 동작은 바꾸지 않았다. 바뀐 출력은 하나뿐이다: `minidb dump`가 CRC 불일치 프레임에 `crc=BAD` 줄을 따로 찍지 않고 판정 줄로만 알린다.

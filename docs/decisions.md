@@ -26,3 +26,4 @@
 | 16 | 2026-11-16 | CLI VARCHAR 출력 폭 최대 64, 비예외 에러 type 이름(RequestError 등) | `[고정]` 규칙이 정하지 않은 빈칸 | AI | §8, §11.4 | 유효 |
 | 17 | 2026-11-16 | 사람·위임 결정만 주제별로 모은 `decisions-summary.md`를 둔다. `architecture.md`에서 뽑은 사본이고, `[고정]`이나 사람·위임 결정이 바뀌면 같은 커밋에서 갱신 | `architecture.md`는 길고 AI 세부가 섞여 있어 팀 공유가 어려움 | 사람 | §0 | 유효 |
 | 18 | 2026-11-17 | 손상 판정 규칙을 `frame::scanFrames` 하나로 모으고 `Table::recover`와 `minidb dump`가 같이 씀. 스캐너는 판정만 하고 자르기·거부는 호출자가 함 | dump와 recover가 규칙을 따로 구현해 이미 어긋났음(dump에 id 오름차순·payload 상한 검사 없음 → 시작 거부되는 파일을 dump는 ok로 보고) | 사람 | §5.3 | 유효 |
+| 19 | 2026-11-17 | 락 분리: `Table`에 `writeMu_`(쓰는 쪽 순서)를 더하고 인코딩·`pwrite`·`ftruncate`는 그것만 쥔 채 함. `mu_`(shared_mutex)는 공개 순간에만 unique. 기준선(#0)의 "shared_mutex 하나"를 바꿈 | 쓰는 쪽이 pwrite 동안 unique 락을 쥐어 읽는 쪽이 잠들었음(작업 1,000개당 문맥 교환 약 80회). 혼합 부하 2스레드가 1스레드보다 느렸음. append-only라 공개 전 바이트는 읽는 쪽이 못 보므로 락이 덮을 필요가 없음. 전후 수치는 `lock-split.md` | 사람 | §12 | 유효 |
