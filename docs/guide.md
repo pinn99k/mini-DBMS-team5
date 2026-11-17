@@ -213,7 +213,7 @@ run  → warning: torn tail (34 bytes at offset 119) truncated, saved to users.t
 
 그래서 길이가 4 MiB를 넘으면 무조건 시작을 거부하게 했다. 이러면 꼬리 손상으로 잘라내는 양이 항상 묶음 하나(≤ 4 MiB) 이하가 되고, 그것도 `.torn`에 보관된다. 포맷을 바꾸지 않고 "조용한 손실"을 "보존된 손실"로 바꾼 것이다(#2).
 
-코드: `src/storage/table.cpp`의 `Table::recover()`, `saveAndTruncateTail()`
+코드: 판정은 `src/storage/frame_scan.cpp`의 `scanFrames()`, 자르기·거부는 `src/storage/table.cpp`의 `Table::recover()`, `saveAndTruncateTail()`. `minidb dump`도 같은 `scanFrames()`로 판정한다(#18).
 
 **확인 질문 4-1.** 프레임 3개짜리 파일에서 **두 번째** 프레임의 마지막 바이트(CRC의 일부)를 바꾸면, 다음 시작은 어떻게 될까?
 

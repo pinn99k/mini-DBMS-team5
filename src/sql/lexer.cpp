@@ -3,6 +3,7 @@
 #include <array>
 #include <cctype>
 #include <limits>
+#include <optional>
 
 namespace minidb {
 namespace {
@@ -12,6 +13,18 @@ constexpr std::array<const char*, 7> kKeywords = {"INSERT", "INTO", "VALUES", "S
 bool isIdentStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 bool isIdentChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+std::optional<TokenKind> punctuation(char c) {
+  switch (c) {
+    case '(': return TokenKind::LParen;
+    case ')': return TokenKind::RParen;
+    case ',': return TokenKind::Comma;
+    case ';': return TokenKind::Semicolon;
+    case '*': return TokenKind::Star;
+    case '=': return TokenKind::Equals;
+    default: return std::nullopt;
+  }
+}
 
 }  // namespace
 
@@ -80,106 +93,94 @@ void Lexer::advance() {
   ++i_;
 }
 
-Token Lexer::next() {
-  // 공백과 주석
+void Lexer::skipSpaceAndComments() {
   for (;;) {
     while (!atEnd() && std::isspace(static_cast<unsigned char>(peek()))) advance();
-    if (peek() == '-' && peek(1) == '-') {
-      while (!atEnd() && peek() != '\n') advance();
-      continue;
-    }
-    break;
+    if (peek() != '-' || peek(1) != '-') return;
+    while (!atEnd() && peek() != '\n') advance();
   }
+}
 
+Token Lexer::next() {
+  skipSpaceAndComments();
   Token t;
   t.pos = here();
   if (atEnd()) return t;  // End
 
   const char c = peek();
-  auto single = [&](TokenKind k) {
-    t.kind = k;
+  if (const auto kind = punctuation(c)) {
+    t.kind = *kind;
     t.text = std::string(1, c);
     advance();
     return t;
-  };
-  switch (c) {
-    case '(': return single(TokenKind::LParen);
-    case ')': return single(TokenKind::RParen);
-    case ',': return single(TokenKind::Comma);
-    case ';': return single(TokenKind::Semicolon);
-    case '*': return single(TokenKind::Star);
-    case '=': return single(TokenKind::Equals);
-    default: break;
   }
-
-  if (isIdentStart(c)) {
-    size_t start = i_;
-    while (!atEnd() && isIdentChar(peek())) advance();
-    t.text = std::string(src_.substr(start, i_ - start));
-    std::string upper;
-    for (char ch : t.text) upper += static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-    t.kind = TokenKind::Ident;
-    for (const char* kw : kKeywords) {
-      if (upper == kw) {
-        t.kind = TokenKind::Keyword;
-        t.text = upper;
-      }
-    }
-    return t;
-  }
-
-  if (isDigit(c) || (c == '-' && isDigit(peek(1)))) {
-    const bool negative = c == '-';
-    if (negative) advance();
-    // 음수는 |INT64_MIN| = INT64_MAX + 1까지 허용
-    const uint64_t limit = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + (negative ? 1u : 0u);
-    uint64_t v = 0;
-    bool overflow = false;
-    size_t start = i_;
-    while (!atEnd() && isDigit(peek())) {
-      const auto d = static_cast<uint64_t>(peek() - '0');
-      if (v > (limit - d) / 10) overflow = true;
-      if (!overflow) v = v * 10 + d;
-      advance();
-    }
-    if (overflow) {
-      throw ParseError("integer literal out of range: " + std::string(negative ? "-" : "") +
-                           std::string(src_.substr(start, i_ - start)),
-                       t.pos);
-    }
-    t.kind = TokenKind::Integer;
-    t.intValue = negative ? static_cast<int64_t>(0 - v) : static_cast<int64_t>(v);
-    t.text = std::to_string(t.intValue);
-    return t;
-  }
-
-  if (c == '\'') {
-    advance();
-    std::string value;
-    for (;;) {
-      if (atEnd()) throw ParseError("unterminated string literal", t.pos);
-      const char ch = peek();
-      if (ch == '\'') {
-        if (peek(1) == '\'') {
-          value += '\'';
-          advance();
-          advance();
-          continue;
-        }
-        advance();
-        break;
-      }
-      value += ch;
-      advance();
-    }
-    if (!isValidUtf8(value)) throw ParseError("string literal is not valid UTF-8", t.pos);
-    t.kind = TokenKind::String;
-    t.text = std::move(value);
-    return t;
-  }
+  if (isIdentStart(c)) return lexWord(t);
+  if (isDigit(c) || (c == '-' && isDigit(peek(1)))) return lexNumber(t);
+  if (c == '\'') return lexString(t);
 
   advance();  // 문제 문자를 지나간 뒤 던진다
   throw ParseError(std::string("unexpected character '") + c + "'", t.pos);
+}
+
+Token Lexer::lexWord(Token t) {
+  const size_t start = i_;
+  while (!atEnd() && isIdentChar(peek())) advance();
+  t.text = std::string(src_.substr(start, i_ - start));
+  std::string upper;
+  for (char ch : t.text) upper += static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  t.kind = TokenKind::Ident;
+  for (const char* kw : kKeywords) {
+    if (upper == kw) {
+      t.kind = TokenKind::Keyword;
+      t.text = upper;
+    }
+  }
+  return t;
+}
+
+Token Lexer::lexNumber(Token t) {
+  const bool negative = peek() == '-';
+  if (negative) advance();
+  // 음수는 |INT64_MIN| = INT64_MAX + 1까지 허용
+  const uint64_t limit = static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + (negative ? 1u : 0u);
+  uint64_t v = 0;
+  bool overflow = false;
+  const size_t start = i_;
+  while (!atEnd() && isDigit(peek())) {
+    const auto d = static_cast<uint64_t>(peek() - '0');
+    if (v > (limit - d) / 10) overflow = true;
+    if (!overflow) v = v * 10 + d;
+    advance();
+  }
+  if (overflow) {
+    throw ParseError("integer literal out of range: " + std::string(negative ? "-" : "") +
+                         std::string(src_.substr(start, i_ - start)),
+                     t.pos);
+  }
+  t.kind = TokenKind::Integer;
+  t.intValue = negative ? static_cast<int64_t>(0 - v) : static_cast<int64_t>(v);
+  t.text = std::to_string(t.intValue);
+  return t;
+}
+
+Token Lexer::lexString(Token t) {
+  advance();  // 여는 '
+  std::string value;
+  for (;;) {
+    if (atEnd()) throw ParseError("unterminated string literal", t.pos);
+    const char ch = peek();
+    if (ch == '\'') {
+      advance();
+      if (peek() != '\'') break;  // 닫는 '
+      // '' → ' 하나
+    }
+    value += ch;
+    advance();
+  }
+  if (!isValidUtf8(value)) throw ParseError("string literal is not valid UTF-8", t.pos);
+  t.kind = TokenKind::String;
+  t.text = std::move(value);
+  return t;
 }
 
 }  // namespace minidb

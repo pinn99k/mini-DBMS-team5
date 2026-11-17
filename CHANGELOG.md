@@ -2,6 +2,16 @@
 
 마일스톤 단위로 덧붙인다. 설계 근거는 `docs/architecture.md`, 결정 이유는 `docs/decisions.md`.
 
+## 0.1.1 — 2026-11-17 (리팩터링 1차)
+
+동작은 바꾸지 않았다. 바뀐 출력은 하나뿐이다: `minidb dump`가 CRC 불일치 프레임에 `crc=BAD` 줄을 따로 찍지 않고 판정 줄로만 알린다.
+
+- **손상 판정을 한 곳으로**(#18): `frame::scanFrames`(`src/storage/frame_scan.*`)를 새로 만들고 `Table::recover`와 `minidb dump`가 같이 쓴다. 전에는 dump에 id 오름차순 검사와 payload 64 KiB 상한 검사가 빠져 있어서, 시작이 거부되는 파일을 dump는 ok로 보고할 수 있었다. 회귀 테스트를 추가했다.
+- `Lexer::next`(CC 39)를 토큰 종류별 `lexWord`·`lexNumber`·`lexString`으로 나눴다.
+- `QueryHandler::handle`(CC 18)을 `parseBody`·`respondInsert`·`respondExplain`·`respondSelect`로 나눴다.
+- 문서 수정: architecture §5.3의 꼬리 자르기 상한 "4 MiB + 12"를 "4 MiB + 8"로 고쳤다(코드 `totalSize = 4 + frame_len + 4`).
+- 침식도 0.56 → 0.38 (`docs/quality-trend.md`).
+
 ## 0.1.0 — 2026-11-16 (MVP)
 
 M1~M15를 한 번에 구현했다. debug(ASan+UBSan)·tsan·release 프리셋에서 테스트 9개(gtest 7 + 셸 종단 간 2) 통과.
