@@ -4,14 +4,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <vector>
-
 #include "cli/table_printer.h"
 #include "common/bytes.h"
-#include "common/crc32.h"
 #include "common/errors.h"
 #include "storage/file_io.h"
 #include "storage/frame_codec.h"
+#include "storage/frame_scan.h"
 #include "storage/schema.h"
 
 namespace minidb {
@@ -58,54 +56,26 @@ int dumpTable(const std::filesystem::path& dataDir, const std::string& table, st
   }
   out << "header: MDB1 v" << bytes::getU16(header + 4) << "\n";
 
-  uint64_t pos = frame::kFileHeaderSize;
-  uint64_t frames = 0, records = 0;
-  std::vector<uint8_t> buf;
-  while (pos < size) {
-    const uint64_t remain = size - pos;
-    auto stop = [&](const char* what, bool tail) {
-      out << "frame #" << frames << " @" << pos << ": " << what << " -> " << (tail ? "TAIL torn" : "MID corruption")
-          << " (" << remain << " bytes from here to end)\n";
-      return 1;
-    };
-    if (remain < frame::kFrameHeaderSize) return stop("incomplete frame header", true);
-    uint8_t fh[frame::kFrameHeaderSize];
-    io.pread(fd, fh, sizeof fh, pos);
-    const uint32_t frameLen = bytes::getU32(fh);
-    const uint32_t count = bytes::getU32(fh + 4);
-    if (frameLen < frame::kMinFrameLen || frameLen > frame::kMaxFrameLen) return stop("frame_len out of range", false);
-    const uint64_t total = frame::totalSize(frameLen);
-    if (total > remain) return stop("incomplete frame", true);
-    buf.resize(frameLen + 4u);
-    io.pread(fd, buf.data(), buf.size(), pos + 4);
-    const bool crcOk = crc32(buf.data(), frameLen) == bytes::getU32(buf.data() + frameLen);
-    out << "frame #" << frames << " @" << pos << " len=" << frameLen << " records=" << count
-        << " crc=" << (crcOk ? "ok" : "BAD") << "\n";
-    if (!crcOk) return stop("CRC mismatch", total == remain);
-
-    size_t off = 4;
-    uint32_t seen = 0;
-    while (off + 4 <= frameLen) {
-      const uint32_t plen = bytes::getU32(buf.data() + off);
-      if (plen > frameLen - off - 4) return stop("payload_len out of range", false);
-      out << "  @" << (pos + 4 + off);
-      try {
-        printRow(out, schema, frame::decodePayload(schema, buf.data() + off + 4, plen));
-      } catch (const StorageError& e) {
-        out << " <" << e.what() << ">\n";
-        return stop("bad record", false);
-      }
-      out << "\n";
-      ++seen;
-      off += 4u + plen;
-    }
-    if (off != frameLen || seen != count) return stop("record_count/frame_len mismatch", false);
-    ++frames;
-    records += seen;
-    pos += total;
+  // 판정 규칙은 Table::recover와 같은 frame::scanFrames (decisions #18). dump는 출력만 하고 자르지 않는다.
+  uint64_t frameNo = 0;
+  frame::ScanCallbacks cb;
+  cb.onFrame = [&](uint64_t pos, uint32_t frameLen, uint32_t count) {
+    out << "frame #" << frameNo++ << " @" << pos << " len=" << frameLen << " records=" << count << " crc=ok\n";
+  };
+  cb.onRecord = [&](uint64_t offset, const Row& row) {
+    out << "  @" << offset;
+    printRow(out, schema, row);
+    out << "\n";
+  };
+  const frame::ScanResult r = frame::scanFrames(io, fd, size, schema, cb);
+  if (r.status == frame::ScanStatus::Ok) {
+    out << r.frames << " frames, " << r.records << " records, ok\n";
+    return 0;
   }
-  out << frames << " frames, " << records << " records, ok\n";
-  return 0;
+  const bool tail = r.status == frame::ScanStatus::TornTail;
+  out << "frame #" << r.frames << " @" << r.at << ": " << r.why << " -> " << (tail ? "TAIL torn" : "MID corruption")
+      << " (" << (size - r.at) << " bytes from here to end)\n";
+  return 1;
 }
 
 }  // namespace minidb

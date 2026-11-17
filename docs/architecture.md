@@ -169,7 +169,7 @@ record offset = 레코드의 payload_len 위치 (프레임 안)
 Table::open(<t>.tbl)
   ├ 파일 없음 → 만들기 → 헤더 8B 쓰기 → fsync(파일) → fsync(디렉터리)
   ├ 8B 미만 → 생성 중 끊긴 파일. 헤더를 다시 쓰고 fsync                   (#5)
-  └ 복구 스캔 (헤더부터 프레임 단위)
+  └ 복구 스캔 (헤더부터 프레임 단위, 판정은 frame::scanFrames 하나)          (#18)
        magic·version 불일치 → StorageError, 시작 거부                     [고정]
        프레임 반복:
          남은 바이트 < 8 (frame_len·record_count도 못 읽음)  → 꼬리 손상
@@ -178,14 +178,16 @@ Table::open(<t>.tbl)
          CRC 불일치: 선언된 끝 == 파일 끝 → 꼬리 손상, 아니면 중간 손상   [고정]
          레코드들이 frame_len을 정확히 채우지 않거나 개수 ≠ record_count → 중간 손상 [고정]
          레코드가 스키마로 디코드되지 않음 (필드 길이 불일치, VARCHAR len > n) → 중간 손상
-         정상 레코드마다 onRecord(id, offset)
+         id가 앞 레코드보다 크지 않음 (엄격한 오름차순 위반)          → 중간 손상
+         정상 레코드마다 onRecord(offset, row)
        꼬리 손상 → 잘라낼 바이트를 <t>.tbl.torn(있으면 .torn.N)에 복사·fsync
                  → ftruncate(프레임 시작) → fsync → 경고 로그 → 정상 시작      (#2)
        중간 손상 → StorageError, 시작 거부                                 [고정]
 ```
 
-- `frame_len` 범위 검사 때문에 꼬리 손상으로 잘라내는 양은 언제나 프레임 하나(≤ 4 MiB + 12) 이하다. 그래서 `.torn` 복사 비용이 작다.
-- `onRecord` 콜백: P1은 `maxId`를 갱신하고, P2는 id가 엄격히 오름차순인지 검사하며(아니면 `StorageError`) 벌크 로더에 넣는다.
+- `frame_len` 범위 검사 때문에 꼬리 손상으로 잘라내는 양은 언제나 프레임 하나(≤ 4 MiB + 8, `totalSize = 4 + frame_len + 4`) 이하다. 그래서 `.torn` 복사 비용이 작다.
+- **판정 규칙의 구현은 `frame::scanFrames`(`src/storage/frame_scan.*`) 하나다** (#18). 스캐너는 읽기만 하고 결과(정상 / 꼬리 손상 위치 / 중간 손상 위치·이유)를 돌려준다. `Table::recover`는 그 결과로 자르거나 거부하고, `minidb dump`는 출력만 한다. 그래서 dump가 "ok"라고 한 파일은 반드시 열린다.
+- `onRecord` 콜백: `Table::recover`는 벌크 로더에 넣는다. id 오름차순 검사는 스캐너가 하므로 로더에는 항상 오름차순으로 들어간다. `maxId`는 스캔 결과의 `lastId`다.
 - `[고정]` `nextId = 본 것 중 최대 id + 1` (빈 테이블은 1). 레코드 수 + 1이 아니다.
 - `[고정]` 열린 뒤의 읽기는 이미 검증된 바이트를 믿는다. 읽을 때마다 CRC를 다시 계산하지 않는다.
 
@@ -607,7 +609,7 @@ CMakeLists.txt  CMakePresets.json  compose.yaml  CLAUDE.md  CHANGELOG.md
 docker/Dockerfile
 src/
   common/   errors.h  value.h  bytes.h  crc32.{h,cpp}                    (P3: json_writer.*)
-  storage/  schema.*  file_io.*  frame_codec.*  table.*  database.*
+  storage/  schema.*  file_io.*  frame_codec.*  frame_scan.*  table.*  database.*
   sql/      token.h  lexer.*  ast.h  parser.*
   engine/   row_sink.h  binder.*  planner.*  executor.*
   index/    bplus_tree.h  bulk_loader.h                                  (P2)
@@ -615,7 +617,7 @@ src/
   cli/      main.cpp  table_printer.*  dump.*
 tests/      모듈별 *_test.cpp, testutil/ (FaultyFileIO, 손상 파일 생성기, 임시 디렉터리)
 bench/      minidb_bench, results/                                       (P2)
-docs/       architecture.md  decisions.md  decisions-summary.md  refactoring.md  explain-log.md  assignment.md  bench.md  archive/
+docs/       architecture.md  decisions.md  decisions-summary.md  refactoring.md  explain-log.md  quality-trend.md  assignment.md  bench.md  archive/
 ```
 
 ## 17. 마일스톤

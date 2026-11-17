@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <random>
 
 #include "common/bytes.h"
 #include "common/crc32.h"
 #include "storage/database.h"
 #include "storage/frame_codec.h"
+#include "storage/frame_scan.h"
 #include "testutil.h"
 
 using namespace minidb;
@@ -215,6 +219,25 @@ TEST_F(TableTest, FrameLenOutOfRangeRefusesEvenAtTail) {
   auto bytes = readBytes(tbl());
   bytes::setU32(&bytes[8], 0x7FFFFFFF);  // 유일한(=마지막) 프레임의 길이가 상한 밖 (decisions #2)
   writeBytes(tbl(), bytes);
+  EXPECT_THROW(open(), StorageError);
+}
+
+TEST_F(TableTest, ScannerRejectsNonAscendingIdsLikeRecover) {
+  // 예전에는 dump만 이 검사를 빠뜨려 "ok"라고 했다. 이제 판정은 scanFrames 하나다 (decisions #18).
+  Schema s = usersSchema();
+  std::vector<uint8_t> file = frame::fileHeader();
+  const auto f = frame::encode(s, {{Value{int64_t{2}}, Value{std::string("a")}, Value{int64_t{1}}},
+                                   {Value{int64_t{1}}, Value{std::string("b")}, Value{int64_t{2}}}});
+  file.insert(file.end(), f.begin(), f.end());
+  writeBytes(tbl(), file);
+
+  const int fd = ::open(tbl().c_str(), O_RDONLY | O_CLOEXEC);
+  ASSERT_GE(fd, 0);
+  const auto r = frame::scanFrames(defaultFileIO(), fd, file.size(), s);
+  ::close(fd);
+  EXPECT_EQ(r.status, frame::ScanStatus::MidCorruption);
+  EXPECT_EQ(r.at, frame::kFileHeaderSize);
+  EXPECT_EQ(r.why, "ids are not strictly ascending");
   EXPECT_THROW(open(), StorageError);
 }
 

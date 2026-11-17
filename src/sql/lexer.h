@@ -19,6 +19,11 @@ class Lexer {
   bool atEnd() const { return i_ >= src_.size(); }
   char peek(size_t k = 0) const { return i_ + k < src_.size() ? src_[i_ + k] : '\0'; }
   void advance();
+  void skipSpaceAndComments();
+  // 토큰 종류별. t.pos는 호출자가 채운 시작 위치
+  Token lexWord(Token t);    // 키워드 또는 식별자
+  Token lexNumber(Token t);  // 정수 (선택적 '-')
+  Token lexString(Token t);  // '...' 문자열
   SourcePos here() const { return SourcePos{line_, col_}; }
 
   std::string_view src_;

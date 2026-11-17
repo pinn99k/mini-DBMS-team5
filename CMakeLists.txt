@@ -34,7 +34,7 @@ add_library(minidb_index INTERFACE)
 target_link_libraries(minidb_index INTERFACE minidb_common)
 
 set(MINIDB_STORAGE_SOURCES
-  src/storage/schema.cpp src/storage/file_io.cpp src/storage/frame_codec.cpp
+  src/storage/schema.cpp src/storage/file_io.cpp src/storage/frame_codec.cpp src/storage/frame_scan.cpp
   src/storage/table.cpp src/storage/database.cpp)
 add_library(minidb_storage STATIC ${MINIDB_STORAGE_SOURCES})
 target_link_libraries(minidb_storage PUBLIC minidb_common minidb_index Threads::Threads)

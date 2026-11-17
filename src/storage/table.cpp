@@ -9,9 +9,9 @@
 #include <limits>
 
 #include "common/bytes.h"
-#include "common/crc32.h"
 #include "common/errors.h"
 #include "storage/frame_codec.h"
+#include "storage/frame_scan.h"
 
 namespace minidb {
 namespace {
@@ -74,85 +74,31 @@ std::unique_ptr<Table> Table::open(const std::filesystem::path& tblPath, std::st
   return t;
 }
 
-// 복구 스캔 (architecture §5.3). 프레임마다 길이 범위·CRC·레코드 구성을 검사하고 인덱스를 벌크 로딩한다.
+// 복구 스캔 (architecture §5.3). 판정은 frame::scanFrames가 하고, 여기서는 결과대로 자르거나 거부하고
+// 정상 레코드로 인덱스를 벌크 로딩한다.
 void Table::recover(uint64_t size) {
-  auto corrupt = [&](uint64_t at, const std::string& why) {
-    return StorageError("table '" + name_ + "': corruption at offset " + std::to_string(at) + ": " + why +
-                        " (refusing to start)");
-  };
-
   uint8_t header[frame::kFileHeaderSize];
   if (io_.pread(fd_, header, sizeof header, 0) != sizeof header || !frame::checkFileHeader(header)) {
     throw StorageError("table '" + name_ + "': bad magic or version in " + path_.string());
   }
 
   Index::Loader loader;
-  std::vector<uint8_t> buf;
-  uint64_t pos = frame::kFileHeaderSize;
-  int64_t lastId = 0;
-  uint64_t rows = 0;
+  frame::ScanCallbacks cb;
+  cb.onRecord = [&](uint64_t offset, const Row& row) { loader.add(std::get<int64_t>(row[0]), offset); };
+  const frame::ScanResult r = frame::scanFrames(io_, fd_, size, schema_, cb);
 
-  while (pos < size) {
-    const uint64_t remain = size - pos;
-    if (remain < frame::kFrameHeaderSize) {
-      saveAndTruncateTail(pos, size);
-      size = pos;
-      break;
-    }
-    uint8_t fh[frame::kFrameHeaderSize];
-    if (io_.pread(fd_, fh, sizeof fh, pos) != sizeof fh) throw StorageError("short read during recovery");
-    const uint32_t frameLen = bytes::getU32(fh);
-    const uint32_t count = bytes::getU32(fh + 4);
-    if (frameLen < frame::kMinFrameLen || frameLen > frame::kMaxFrameLen) {
-      throw corrupt(pos, "frame_len " + std::to_string(frameLen) + " out of range");  // decisions #2
-    }
-    const uint64_t total = frame::totalSize(frameLen);
-    if (total > remain) {
-      saveAndTruncateTail(pos, size);
-      size = pos;
-      break;
-    }
-
-    buf.resize(frameLen + 4u);  // record_count .. records .. crc32 (파일 위치 pos + 4부터)
-    if (io_.pread(fd_, buf.data(), buf.size(), pos + 4) != buf.size()) {
-      throw StorageError("short read during recovery");
-    }
-    if (crc32(buf.data(), frameLen) != bytes::getU32(buf.data() + frameLen)) {
-      if (total == remain) {
-        saveAndTruncateTail(pos, size);
-        size = pos;
-        break;
-      }
-      throw corrupt(pos, "CRC mismatch");
-    }
-
-    size_t off = 4;
-    uint32_t seen = 0;
-    while (off < frameLen) {
-      if (frameLen - off < 4) throw corrupt(pos, "truncated record header inside frame");
-      const uint32_t plen = bytes::getU32(buf.data() + off);
-      if (plen > frame::kMaxPayload || plen > frameLen - off - 4) throw corrupt(pos, "payload_len out of range");
-      Row r;
-      try {
-        r = frame::decodePayload(schema_, buf.data() + off + 4, plen);
-      } catch (const StorageError& e) {
-        throw corrupt(pos, e.what());
-      }
-      const int64_t id = std::get<int64_t>(r[0]);
-      if (id <= lastId) throw corrupt(pos, "ids are not strictly ascending");
-      loader.add(id, pos + 4 + off);  // record offset = 파일에서 payload_len의 위치
-      lastId = id;
-      ++seen;
-      off += 4u + plen;
-    }
-    if (seen != count) throw corrupt(pos, "record_count mismatch");
-    rows += seen;
-    pos += total;
+  if (r.status == frame::ScanStatus::MidCorruption) {
+    throw StorageError("table '" + name_ + "': corruption at offset " + std::to_string(r.at) + ": " + r.why +
+                       " (refusing to start)");
+  }
+  if (r.status == frame::ScanStatus::TornTail) {
+    saveAndTruncateTail(r.at, size);
+    size = r.at;
   }
 
   fileSize_ = size;
-  maxId_ = lastId;
-  rowCount_ = rows;
+  maxId_ = r.lastId;
+  rowCount_ = r.records;
   index_ = loader.finish();
 }
 
