@@ -46,8 +46,12 @@ std::optional<Statement> Parser::next() {
     SourcePos pos = take().pos;
     if (!isKeyword(peek(), "SELECT")) unexpected("SELECT after EXPLAIN");
     st = ExplainStmt{parseSelect(), pos};
+  } else if (isKeyword(first, "UPDATE")) {
+    st = parseUpdate();
+  } else if (isKeyword(first, "DELETE")) {
+    st = parseDelete();
   } else {
-    unexpected("INSERT, SELECT or EXPLAIN");
+    unexpected("INSERT, SELECT, EXPLAIN, UPDATE or DELETE");
   }
 
   if (peek().kind == TokenKind::Semicolon) {
@@ -120,14 +124,45 @@ SelectStmt Parser::parseSelect() {
   Token table = expect(TokenKind::Ident, "table name");
   s.table = table.text;
   s.tablePos = table.pos;
-
-  if (isKeyword(peek(), "WHERE")) {
-    take();
-    Token col = expect(TokenKind::Ident, "column name");
-    expect(TokenKind::Equals, "'=' (only single equality is supported)");
-    s.where = Condition{col.text, col.pos, parseLiteral()};
-  }
+  s.where = parseWhere();
   return s;
+}
+
+UpdateStmt Parser::parseUpdate() {
+  UpdateStmt s;
+  s.pos = take().pos;  // UPDATE
+  Token table = expect(TokenKind::Ident, "table name");
+  s.table = table.text;
+  s.tablePos = table.pos;
+  expectKeyword("SET");
+  for (;;) {
+    Token col = expect(TokenKind::Ident, "column name");
+    expect(TokenKind::Equals, "'='");
+    s.set.push_back(Assignment{col.text, col.pos, parseLiteral()});
+    if (peek().kind != TokenKind::Comma) break;
+    take();
+  }
+  s.where = parseWhere();
+  return s;
+}
+
+DeleteStmt Parser::parseDelete() {
+  DeleteStmt s;
+  s.pos = take().pos;  // DELETE
+  expectKeyword("FROM");
+  Token table = expect(TokenKind::Ident, "table name");
+  s.table = table.text;
+  s.tablePos = table.pos;
+  s.where = parseWhere();
+  return s;
+}
+
+std::optional<Condition> Parser::parseWhere() {
+  if (!isKeyword(peek(), "WHERE")) return std::nullopt;
+  take();
+  Token col = expect(TokenKind::Ident, "column name");
+  expect(TokenKind::Equals, "'=' (only single equality is supported)");
+  return Condition{col.text, col.pos, parseLiteral()};
 }
 
 Literal Parser::parseLiteral() {

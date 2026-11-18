@@ -63,6 +63,37 @@ uint64_t Executor::run(const PreparedSelect& p, RowSink& sink) const {
   return count;
 }
 
+std::vector<uint64_t> Executor::modify(const std::vector<Statement>& batch) const {
+  if (batch.empty()) throw std::invalid_argument("modify: empty batch");
+  std::vector<Table::Edit> edits;
+  edits.reserve(batch.size());
+  Table* table = nullptr;
+  for (const Statement& stmt : batch) {
+    BoundModify b;
+    if (const auto* u = std::get_if<UpdateStmt>(&stmt)) {
+      b = bindUpdate(db_, *u);
+    } else if (const auto* d = std::get_if<DeleteStmt>(&stmt)) {
+      b = bindDelete(db_, *d);
+    } else {
+      throw std::invalid_argument("modify: not an UPDATE or DELETE");
+    }
+    if (table && b.table != table) throw SchemaError("a batch must target a single table", positionOf(stmt));
+    table = b.table;
+
+    Table::Edit e;  // 접근 경로 선택은 SELECT와 같은 규칙 (architecture §7.2)
+    const AccessPath path = choosePath(b.filter);
+    if (const auto* ix = std::get_if<IndexScan>(&path)) {
+      e.id = ix->id;
+    } else {
+      e.filter = std::get<FullScan>(path).filter;
+    }
+    e.set = std::move(b.set);
+    e.remove = b.remove;
+    edits.push_back(std::move(e));
+  }
+  return table->modify(edits);
+}
+
 std::string Executor::explain(const SelectStmt& stmt) const {
   PreparedSelect p = prepare(stmt);
   return describePath(p.path, p.bound);

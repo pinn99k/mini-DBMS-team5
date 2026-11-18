@@ -44,7 +44,28 @@ struct ExplainStmt {
   SourcePos pos;
 };
 
-using Statement = std::variant<InsertStmt, SelectStmt, ExplainStmt>;
+struct Assignment {
+  std::string column;
+  SourcePos columnPos;
+  Literal value;
+};
+
+struct UpdateStmt {
+  std::string table;
+  SourcePos tablePos;
+  std::vector<Assignment> set;
+  std::optional<Condition> where;  // 없으면 모든 행
+  SourcePos pos;
+};
+
+struct DeleteStmt {
+  std::string table;
+  SourcePos tablePos;
+  std::optional<Condition> where;  // 없으면 모든 행
+  SourcePos pos;
+};
+
+using Statement = std::variant<InsertStmt, SelectStmt, ExplainStmt, UpdateStmt, DeleteStmt>;
 
 inline SourcePos positionOf(const Statement& s) {
   return std::visit([](const auto& st) { return st.pos; }, s);

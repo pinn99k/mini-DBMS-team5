@@ -42,6 +42,20 @@ size_t resolveColumn(const Table& t, const std::string& name, SourcePos pos) {
   return *idx;
 }
 
+// WHERE col = literal → Predicate. 타입이 다르면 SchemaError.
+std::optional<Predicate> bindWhere(const Table& t, const std::optional<Condition>& where) {
+  if (!where) return std::nullopt;
+  const size_t idx = resolveColumn(t, where->column, where->columnPos);
+  const Column& col = t.schema().columns()[idx];
+  const bool isInt = std::holds_alternative<int64_t>(where->value.value);
+  if ((col.type == ColumnType::Int) != isInt) {
+    throw SchemaError(std::string("type mismatch in WHERE: column '") + col.name + "' is " + typeName(col) +
+                          ", got " + (isInt ? "an integer" : "a string"),
+                      where->value.pos);
+  }
+  return Predicate{idx, where->value.value};
+}
+
 }  // namespace
 
 BoundInsert bindInsert(const Database& db, const InsertStmt& s) {
@@ -90,17 +104,32 @@ BoundSelect bindSelect(const Database& db, const SelectStmt& s) {
   } else {
     for (size_t j = 0; j < s.columns.size(); ++j) out.projection.push_back(resolveColumn(t, s.columns[j], s.columnPos[j]));
   }
-  if (s.where) {
-    const size_t idx = resolveColumn(t, s.where->column, s.where->columnPos);
-    const Column& col = t.schema().columns()[idx];
-    const bool isInt = std::holds_alternative<int64_t>(s.where->value.value);
-    if ((col.type == ColumnType::Int) != isInt) {
-      throw SchemaError(std::string("type mismatch in WHERE: column '") + col.name + "' is " + typeName(col) +
-                            ", got " + (isInt ? "an integer" : "a string"),
-                        s.where->value.pos);
-    }
-    out.filter = Predicate{idx, s.where->value.value};
+  out.filter = bindWhere(t, s.where);
+  return out;
+}
+
+BoundModify bindUpdate(const Database& db, const UpdateStmt& s) {
+  Table& t = lookup(db, s.table, s.tablePos);
+  BoundModify out;
+  out.table = &t;
+  out.filter = bindWhere(t, s.where);
+  std::vector<bool> seen(t.schema().columns().size(), false);
+  for (const Assignment& a : s.set) {
+    if (a.column == "id") throw SchemaError("column 'id' cannot be updated", a.columnPos);
+    const size_t idx = resolveColumn(t, a.column, a.columnPos);
+    if (seen[idx]) throw SchemaError("column '" + a.column + "' assigned twice", a.columnPos);
+    seen[idx] = true;
+    out.set.emplace_back(idx, checkValue(t.schema().columns()[idx], a.value));
   }
+  return out;
+}
+
+BoundModify bindDelete(const Database& db, const DeleteStmt& s) {
+  Table& t = lookup(db, s.table, s.tablePos);
+  BoundModify out;
+  out.table = &t;
+  out.filter = bindWhere(t, s.where);
+  out.remove = true;
   return out;
 }
 

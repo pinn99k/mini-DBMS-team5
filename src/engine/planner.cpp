@@ -2,11 +2,9 @@
 
 namespace minidb {
 
-AccessPath choosePath(const BoundSelect& select) {
-  if (select.filter && select.filter->column == 0) {
-    return IndexScan{std::get<int64_t>(select.filter->value)};
-  }
-  return FullScan{select.filter};
+AccessPath choosePath(const std::optional<Predicate>& filter) {
+  if (filter && filter->column == 0) return IndexScan{std::get<int64_t>(filter->value)};
+  return FullScan{filter};
 }
 
 std::string sqlLiteral(const Value& v) {

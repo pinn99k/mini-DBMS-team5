@@ -23,7 +23,17 @@ struct BoundSelect {
   std::optional<Predicate> filter;
 };
 
+// UPDATE·DELETE (architecture §7.1). remove면 set은 비어 있다.
+struct BoundModify {
+  Table* table = nullptr;
+  std::optional<Predicate> filter;
+  std::vector<std::pair<size_t, Value>> set;
+  bool remove = false;
+};
+
 BoundInsert bindInsert(const Database& db, const InsertStmt& stmt);
 BoundSelect bindSelect(const Database& db, const SelectStmt& stmt);
+BoundModify bindUpdate(const Database& db, const UpdateStmt& stmt);
+BoundModify bindDelete(const Database& db, const DeleteStmt& stmt);
 
 }  // namespace minidb

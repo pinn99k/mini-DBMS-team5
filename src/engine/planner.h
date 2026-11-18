@@ -21,7 +21,8 @@ struct IndexScan {
 
 using AccessPath = std::variant<FullScan, IndexScan>;
 
-AccessPath choosePath(const BoundSelect& select);
+AccessPath choosePath(const std::optional<Predicate>& filter);  // SELECT·UPDATE·DELETE 공용
+inline AccessPath choosePath(const BoundSelect& select) { return choosePath(select.filter); }
 
 // EXPLAIN 출력: IndexScan(t, id=5) | FullScan(t) | FullScan(t, filter name='kim')
 std::string describePath(const AccessPath& path, const BoundSelect& select);
