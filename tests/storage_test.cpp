@@ -225,8 +225,9 @@ TEST_F(TableTest, FrameLenOutOfRangeRefusesEvenAtTail) {
   EXPECT_THROW(open(), StorageError);
 }
 
-TEST_F(TableTest, ScannerRejectsNonAscendingIdsLikeRecover) {
-  // 예전에는 dump만 이 검사를 빠뜨려 "ok"라고 했다. 이제 판정은 scanFrames 하나다 (decisions #18).
+TEST_F(TableTest, ScannerRejectsUpdateOfMissingIdLikeRecover) {
+  // 예전에는 dump만 id 검사를 빠뜨려 "ok"라고 했다. 이제 판정은 scanFrames 하나다 (decisions #18).
+  // id 2 다음의 id 1은 "이미 본 최대 id 이하 = UPDATE"로 판정되는데, 1은 넣은 적이 없다 (decisions #20).
   Schema s = usersSchema();
   std::vector<uint8_t> file = frame::fileHeader();
   const auto f = frame::encode(s, {{Value{int64_t{2}}, Value{std::string("a")}, Value{int64_t{1}}},
@@ -240,8 +241,228 @@ TEST_F(TableTest, ScannerRejectsNonAscendingIdsLikeRecover) {
   ::close(fd);
   EXPECT_EQ(r.status, frame::ScanStatus::MidCorruption);
   EXPECT_EQ(r.at, frame::kFileHeaderSize);
-  EXPECT_EQ(r.why, "ids are not strictly ascending");
+  EXPECT_EQ(r.why, "update of a missing id 1");
   EXPECT_THROW(open(), StorageError);
+}
+
+// ---- UPDATE·DELETE (architecture §5.4b, decisions #20 #21 #24) --------------------------------
+
+namespace {
+
+Table::Edit setAge(std::optional<int64_t> id, int64_t age, std::optional<Predicate> filter = std::nullopt) {
+  Table::Edit e;
+  e.id = id;
+  e.filter = std::move(filter);
+  e.set = {{2, Value{age}}};
+  return e;
+}
+
+Table::Edit del(std::optional<int64_t> id, std::optional<Predicate> filter = std::nullopt) {
+  Table::Edit e;
+  e.id = id;
+  e.filter = std::move(filter);
+  e.remove = true;
+  return e;
+}
+
+Predicate nameIs(const std::string& n) { return Predicate{1, Value{n}}; }
+int64_t ageOf(const Table& t, int64_t id) { return std::get<int64_t>((*t.findById(id))[2]); }
+
+std::vector<int64_t> idsOf(const std::vector<Row>& rows) {
+  std::vector<int64_t> out;
+  for (const Row& r : rows) out.push_back(std::get<int64_t>(r[0]));
+  return out;
+}
+
+frame::ScanResult scanFile(const std::filesystem::path& p) {
+  const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+  const auto r = frame::scanFrames(defaultFileIO(), fd, std::filesystem::file_size(p), usersSchema());
+  ::close(fd);
+  return r;
+}
+
+}  // namespace
+
+TEST_F(TableTest, UpdateAndDeleteRoundTripAndSurviveRestart) {
+  {
+    auto t = open();
+    t->insert({user("a", 1), user("b", 2), user("c", 3), user("d", 4), user("e", 5)});
+    EXPECT_EQ(t->modify({setAge(2, 99)}), std::vector<uint64_t>{1});              // id 경로
+    EXPECT_EQ(t->modify({del(3)}), std::vector<uint64_t>{1});
+    EXPECT_EQ(t->modify({setAge(std::nullopt, 50, nameIs("e"))}), std::vector<uint64_t>{1});  // 필터 경로
+    EXPECT_EQ(t->modify({del(3), setAge(42, 1)}), (std::vector<uint64_t>{0, 0}));  // 지운 id, 없는 id
+    EXPECT_EQ(idsOf(scanAll(*t)), (std::vector<int64_t>{1, 2, 4, 5}));
+    EXPECT_EQ(ageOf(*t, 2), 99);
+    EXPECT_EQ(ageOf(*t, 5), 50);
+    EXPECT_FALSE(t->findById(3));
+    EXPECT_EQ(t->rowCount(), 4u);
+    EXPECT_TRUE(t->validateIndex());
+  }
+  auto t = open();
+  EXPECT_EQ(idsOf(scanAll(*t)), (std::vector<int64_t>{1, 2, 4, 5}));
+  EXPECT_EQ(ageOf(*t, 2), 99);
+  EXPECT_EQ(ageOf(*t, 5), 50);
+  EXPECT_FALSE(t->findById(3));
+  EXPECT_EQ(t->rowCount(), 4u);
+  EXPECT_EQ(t->maxId(), 5);
+  EXPECT_TRUE(t->validateIndex());
+  EXPECT_EQ(t->insert({user("f", 6)}), std::vector<int64_t>{6});
+}
+
+TEST_F(TableTest, DeletingMaxIdDoesNotReuseItAfterRestart) {
+  {
+    auto t = open();
+    t->insert({user("a", 1), user("b", 2), user("c", 3)});
+    t->modify({del(3)});
+    EXPECT_EQ(t->maxId(), 3);
+  }
+  auto t = open();
+  EXPECT_EQ(t->maxId(), 3);  // 지운 id 3의 INSERT 레코드도 파일에 있다
+  EXPECT_EQ(t->insert({user("d", 4)}), std::vector<int64_t>{4});
+}
+
+TEST_F(TableTest, BatchAppliesStatementsInOrderAsOneFrame) {
+  auto t = open();
+  t->insert({user("a", 1), user("b", 2), user("c", 3)});
+  const auto before = scanFile(tbl()).frames;
+  // UPDATE 1 → DELETE 1 → UPDATE 1(이미 지움 = 0행) → 모든 행 age=5(남은 2행)
+  EXPECT_EQ(t->modify({setAge(1, 10), del(1), setAge(1, 20), setAge(std::nullopt, 5)}),
+            (std::vector<uint64_t>{1, 1, 0, 2}));
+  const auto r = scanFile(tbl());
+  EXPECT_EQ(r.frames, before + 1);  // 배치 전체가 프레임 하나
+  EXPECT_EQ(r.records, 3u + 3u);    // id마다 최종 상태 하나: 묘비 1 + 새 버전 2
+  EXPECT_FALSE(t->findById(1));
+  EXPECT_EQ(ageOf(*t, 2), 5);
+  EXPECT_EQ(ageOf(*t, 3), 5);
+
+  const auto size = std::filesystem::file_size(tbl());
+  EXPECT_EQ(t->modify({setAge(std::nullopt, 9, nameIs("nobody"))}), std::vector<uint64_t>{0});
+  EXPECT_EQ(std::filesystem::file_size(tbl()), size);  // 맞는 행이 없으면 아무것도 쓰지 않음
+}
+
+TEST_F(TableTest, TornModifyFrameDropsTheWholeBatch) {
+  {
+    auto t = open();
+    t->insert({user("a", 1), user("b", 2), user("c", 3)});
+    t->modify({setAge(1, 50), del(2)});
+  }
+  auto bytes = readBytes(tbl());
+  bytes.resize(bytes.size() - 3);
+  writeBytes(tbl(), bytes);
+  auto t = open();
+  EXPECT_EQ(ageOf(*t, 1), 1);  // UPDATE도 DELETE도 반영 안 됨
+  EXPECT_TRUE(t->findById(2));
+  EXPECT_EQ(t->rowCount(), 3u);
+  EXPECT_TRUE(std::filesystem::exists(dir / "users.tbl.torn"));
+}
+
+TEST_F(TableTest, MidCorruptionInModifyFrameRefusesToStart) {
+  uint64_t at = 0;
+  {
+    auto t = open();
+    t->insert({user("a", 1), user("b", 2)});
+    at = t->fileSize();
+    t->modify({setAge(1, 50), del(2)});
+    t->insert({user("c", 3)});
+  }
+  auto bytes = readBytes(tbl());
+  bytes[at + 12] ^= 0xFF;  // 수정 프레임 내용
+  writeBytes(tbl(), bytes);
+  EXPECT_THROW(open(), StorageError);
+}
+
+TEST_F(TableTest, ScannerRejectsDeleteOfMissingOrDeletedId) {
+  Schema s = usersSchema();
+  auto fileWith = [&](const std::vector<std::vector<Row>>& frames) {
+    std::vector<uint8_t> file = frame::fileHeader();
+    for (const auto& rows : frames) {
+      const auto f = frame::encode(s, rows);
+      file.insert(file.end(), f.begin(), f.end());
+    }
+    writeBytes(tbl(), file);
+  };
+  const Row a{Value{int64_t{1}}, Value{std::string("a")}, Value{int64_t{1}}};
+  const Row tomb1{Value{int64_t{1}}};
+  const Row tomb2{Value{int64_t{2}}};
+
+  fileWith({{a}, {tomb1}});  // 정상: 넣고 지움
+  auto r = scanFile(tbl());
+  EXPECT_EQ(r.status, frame::ScanStatus::Ok);
+  EXPECT_TRUE(r.live.empty());
+  EXPECT_EQ(r.lastId, 1);
+
+  fileWith({{a}, {tomb2}});
+  EXPECT_EQ(scanFile(tbl()).why, "delete of a missing id 2");
+  EXPECT_THROW(open(), StorageError);
+
+  fileWith({{a}, {tomb1}, {tomb1}});
+  EXPECT_EQ(scanFile(tbl()).why, "delete of a missing id 1");
+
+  fileWith({{a}, {tomb1}, {a}});  // 지운 id의 새 버전
+  EXPECT_EQ(scanFile(tbl()).why, "update of a missing id 1");
+}
+
+TEST_F(TableTest, InjectedWriteFailureDuringModifyLeavesStateUnchanged) {
+  FaultyFileIO io;
+  auto t = open(io);
+  t->insert({user("a", 1), user("b", 2)});
+  const auto size = std::filesystem::file_size(tbl());
+
+  io.failWriteAfter = 1;
+  EXPECT_THROW(t->modify({setAge(1, 50), del(2)}), StorageError);
+  EXPECT_EQ(std::filesystem::file_size(tbl()), size);
+  EXPECT_EQ(ageOf(*t, 1), 1);
+  EXPECT_TRUE(t->findById(2));
+  EXPECT_EQ(t->rowCount(), 2u);
+  EXPECT_TRUE(t->validateIndex());
+
+  io.failWriteAfter = 1;
+  io.failTruncateAfter = 1;
+  EXPECT_THROW(t->modify({del(1)}), StorageError);
+  EXPECT_FALSE(t->writable());
+  EXPECT_THROW(t->modify({del(1)}), StorageError);
+  t.reset();
+  auto again = open();  // 찢어진 수정 프레임은 꼬리 손상으로 정리
+  EXPECT_EQ(again->rowCount(), 2u);
+  EXPECT_EQ(ageOf(*again, 1), 1);
+}
+
+TEST_F(TableTest, TooManyChangesIsSchemaErrorAndWritesNothing) {
+  auto t = Table::open(dir / "big.tbl", "big", Schema::parse("blob VARCHAR(60000)", "big"), defaultFileIO());
+  std::vector<std::vector<Value>> half(40, {Value{std::string(60000, 'a')}});
+  t->insert(half);
+  t->insert(half);  // 80행 × 60 KB = 4.8 MB > 4 MiB
+  const auto size = std::filesystem::file_size(dir / "big.tbl");
+  Table::Edit all;
+  all.set = {{1, Value{std::string(60000, 'b')}}};
+  EXPECT_THROW(t->modify({all}), SchemaError);
+  EXPECT_EQ(std::filesystem::file_size(dir / "big.tbl"), size);
+  Table::Edit drop;
+  drop.remove = true;
+  EXPECT_EQ(t->modify({drop}), std::vector<uint64_t>{80});  // 묘비는 12 B라 들어간다
+  EXPECT_EQ(t->rowCount(), 0u);
+}
+
+TEST_F(TableTest, ScanAfterScatteredUpdatesIsInIdOrder) {
+  auto t = open();
+  for (int b = 0; b < 10; ++b) {
+    std::vector<std::vector<Value>> batch;
+    for (int i = 0; i < 300; ++i) batch.push_back(user("u", b * 300 + i));
+    t->insert(batch);
+  }
+  std::vector<Table::Edit> edits;
+  for (int64_t id = 2; id <= 3000; id += 2) edits.push_back(setAge(id, -id));  // 짝수 id의 새 버전은 파일 끝
+  t->modify(edits);
+  t->modify({del(7), del(3000)});
+  const auto rows = scanAll(*t);
+  ASSERT_EQ(rows.size(), 2998u);
+  int64_t prev = 0;
+  for (const Row& r : rows) {
+    const int64_t id = std::get<int64_t>(r[0]);
+    ASSERT_GT(id, prev);
+    EXPECT_EQ(std::get<int64_t>(r[2]), id % 2 == 0 ? -id : id - 1);
+    prev = id;
+  }
 }
 
 // pwriteAll 안에서 멈추는 FileIO. 쓰기가 진행 중인 순간을 테스트에서 붙잡는다.

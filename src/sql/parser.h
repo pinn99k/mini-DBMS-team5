@@ -6,6 +6,9 @@
 // insert     := INSERT INTO ident [ '(' ident {',' ident} ')' ] VALUES '(' literal {',' literal} ')'
 // select     := SELECT ( '*' | ident {',' ident} ) FROM ident [ WHERE ident '=' literal ]
 // explain    := EXPLAIN select
+// update     := UPDATE ident SET ident '=' literal {',' ident '=' literal} [ where ]
+// delete     := DELETE FROM ident [ where ]
+// where      := WHERE ident '=' literal
 
 #include <optional>
 #include <string_view>
@@ -32,6 +35,9 @@ class Parser {
 
   InsertStmt parseInsert();
   SelectStmt parseSelect();
+  UpdateStmt parseUpdate();
+  DeleteStmt parseDelete();
+  std::optional<Condition> parseWhere();
   Literal parseLiteral();
 
   Lexer lex_;

@@ -133,6 +133,26 @@ TEST(ParserTest, SelectVariants) {
   EXPECT_EQ(std::get<int64_t>(c.select.where->value.value), 5);
 }
 
+TEST(ParserTest, UpdateAndDeleteVariants) {
+  auto u = std::get<UpdateStmt>(parseOne("update users SET age = 26, name = 'it''s' WHERE id = 1;"));
+  EXPECT_EQ(u.table, "users");
+  ASSERT_EQ(u.set.size(), 2u);
+  EXPECT_EQ(u.set[0].column, "age");
+  EXPECT_EQ(std::get<int64_t>(u.set[0].value.value), 26);
+  EXPECT_EQ(std::get<std::string>(u.set[1].value.value), "it's");
+  EXPECT_EQ(u.set[1].columnPos.col, 28u);
+  ASSERT_TRUE(u.where);
+  EXPECT_EQ(u.where->column, "id");
+
+  auto all = std::get<UpdateStmt>(parseOne("UPDATE t SET n = -1"));
+  EXPECT_FALSE(all.where);
+
+  auto d = std::get<DeleteStmt>(parseOne("DELETE FROM users WHERE name = 'kim'"));
+  EXPECT_EQ(d.table, "users");
+  EXPECT_EQ(std::get<std::string>(d.where->value.value), "kim");
+  EXPECT_FALSE(std::get<DeleteStmt>(parseOne("delete from t")).where);
+}
+
 TEST(ParserTest, MultipleStatementsAndEmptyOnes) {
   Parser p(";; SELECT * FROM a; ; INSERT INTO b VALUES (1);SELECT * FROM c");
   int n = 0;
@@ -149,7 +169,10 @@ TEST(ParserTest, SyntaxErrorsCarryLineAndCol) {
   EXPECT_EQ(p.col, 26u);
   parseErrorPos("SELECT * FROM t WHERE a > 1");  // '=' 만 지원
   parseErrorPos("SELECT * FROM t WHERE a = b");  // 오른쪽은 리터럴만
-  parseErrorPos("DELETE FROM t");
+  parseErrorPos("DELETE t");                     // FROM 빠짐
+  parseErrorPos("UPDATE t WHERE a = 1");         // SET 빠짐
+  parseErrorPos("UPDATE t SET a = 1,");          // 할당 뒤 쉼표
+  parseErrorPos("UPDATE t SET a 1");             // '=' 빠짐
   parseErrorPos("SELECT * FROM t extra");
 }
 

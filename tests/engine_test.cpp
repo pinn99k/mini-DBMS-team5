@@ -40,6 +40,11 @@ class EngineTest : public ::testing::Test {
     exec = std::make_unique<Executor>(*db);
   }
   std::vector<int64_t> insert(const std::string& sql) { return exec->insert({std::get<InsertStmt>(parse(sql))}); }
+  std::vector<uint64_t> modify(const std::vector<std::string>& sqls) {
+    std::vector<Statement> batch;
+    for (const auto& s : sqls) batch.push_back(parse(s));
+    return exec->modify(batch);
+  }
   CollectSink select(const std::string& sql) {
     CollectSink sink;
     exec->select(std::get<SelectStmt>(parse(sql)), sink);
@@ -50,6 +55,7 @@ class EngineTest : public ::testing::Test {
       auto st = parse(sql);
       if (auto* i = std::get_if<InsertStmt>(&st)) exec->insert({*i});
       if (std::holds_alternative<SelectStmt>(st)) select(sql);
+      if (std::holds_alternative<UpdateStmt>(st) || std::holds_alternative<DeleteStmt>(st)) exec->modify({st});
     } catch (const SchemaError& e) {
       return e;
     }
@@ -116,6 +122,45 @@ TEST_F(EngineTest, BatchIsAtomicAndSingleTable) {
   EXPECT_THROW(exec->insert({a, other}), SchemaError);
   EXPECT_EQ(db->table("items").rowCount(), 0u);
   EXPECT_EQ(exec->insert({a, a, a}), (std::vector<int64_t>{1, 2, 3}));
+}
+
+TEST_F(EngineTest, UpdateAndDeleteThroughBothAccessPaths) {
+  insert("INSERT INTO users VALUES ('kim', 25)");
+  insert("INSERT INTO users VALUES ('lee', 30)");
+  insert("INSERT INTO users VALUES ('kim', 40)");
+  EXPECT_EQ(modify({"UPDATE users SET age = 26 WHERE id = 1"}), std::vector<uint64_t>{1});      // IndexScan
+  EXPECT_EQ(modify({"UPDATE users SET name = 'park' WHERE name = 'kim'"}), std::vector<uint64_t>{2});  // FullScan
+  EXPECT_EQ(modify({"DELETE FROM users WHERE id = 2", "UPDATE users SET age = 1 WHERE name = 'lee'"}),
+            (std::vector<uint64_t>{1, 0}));  // 뒤 문장은 앞 문장의 결과를 본다
+  auto all = select("SELECT * FROM users");
+  ASSERT_EQ(all.rows.size(), 2u);
+  EXPECT_EQ(all.rows[0], (Row{Value{int64_t{1}}, Value{std::string("park")}, Value{int64_t{26}}}));
+  EXPECT_EQ(all.rows[1], (Row{Value{int64_t{3}}, Value{std::string("park")}, Value{int64_t{40}}}));
+  EXPECT_EQ(modify({"UPDATE users SET age = 0"}), std::vector<uint64_t>{2});  // WHERE 없음 = 모든 행
+  EXPECT_EQ(modify({"DELETE FROM users"}), std::vector<uint64_t>{2});
+  EXPECT_EQ(db->table("users").rowCount(), 0u);
+  EXPECT_EQ(insert("INSERT INTO users VALUES ('new', 1)"), std::vector<int64_t>{4});  // id 재사용 없음
+}
+
+TEST_F(EngineTest, UpdateDeleteValidationIsAtomic) {
+  insert("INSERT INTO users VALUES ('kim', 25)");
+  EXPECT_EQ(schemaError("UPDATE nope SET age = 1").kind, SchemaError::Kind::UnknownTable);
+  EXPECT_EQ(schemaError("DELETE FROM nope").kind, SchemaError::Kind::UnknownTable);
+  schemaError("UPDATE users SET id = 5");               // id는 못 바꿈
+  schemaError("UPDATE users SET age = 1, age = 2");     // 같은 컬럼 두 번
+  schemaError("UPDATE users SET nope = 1");
+  schemaError("UPDATE users SET age = 'x'");            // 타입
+  schemaError("UPDATE users SET name = 'waytoolong'");  // VARCHAR 초과
+  schemaError("UPDATE users SET age = 1 WHERE name = 3");
+  schemaError("DELETE FROM users WHERE nope = 1");
+  SchemaError e = schemaError("UPDATE users SET age = 1, id = 2");
+  ASSERT_TRUE(e.pos);
+  EXPECT_EQ(e.pos->col, 27u);
+  // 배치 중 하나라도 틀리면 아무것도 안 바뀜, 여러 테이블이면 에러
+  EXPECT_THROW(modify({"DELETE FROM users", "UPDATE users SET age = 'x'"}), SchemaError);
+  EXPECT_THROW(modify({"DELETE FROM users", "DELETE FROM items"}), SchemaError);
+  EXPECT_EQ(db->table("users").rowCount(), 1u);
+  EXPECT_THROW(exec->modify({parse("SELECT * FROM users")}), std::invalid_argument);
 }
 
 TEST_F(EngineTest, ExplainChoosesAccessPath) {

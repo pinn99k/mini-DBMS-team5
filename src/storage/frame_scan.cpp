@@ -1,5 +1,6 @@
 #include "storage/frame_scan.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "common/bytes.h"
@@ -8,16 +9,24 @@
 #include "storage/frame_codec.h"
 
 namespace minidb::frame {
+namespace {
+constexpr uint64_t kDead = 0;  // 살아 있는 id 표에서 지운 id 표시. 0은 파일 헤더라 레코드 위치일 수 없다
+}
 
 ScanResult scanFrames(FileIO& io, int fd, uint64_t size, const Schema& schema, const ScanCallbacks& cb) {
   ScanResult r;
   uint64_t pos = kFileHeaderSize;
   std::vector<uint8_t> buf;
+  auto finish = [&]() {
+    r.live.erase(std::remove_if(r.live.begin(), r.live.end(), [](const auto& e) { return e.second == kDead; }),
+                 r.live.end());
+    return r;
+  };
   auto stop = [&](ScanStatus status, std::string why) {
     r.status = status;
     r.at = pos;
     r.why = std::move(why);
-    return r;
+    return finish();
   };
 
   while (pos < size) {
@@ -51,16 +60,34 @@ ScanResult scanFrames(FileIO& io, int fd, uint64_t size, const Schema& schema, c
       if (plen > kMaxPayload || plen > frameLen - off - 4) {
         return stop(ScanStatus::MidCorruption, "payload_len out of range");
       }
+      const uint64_t at = pos + 4 + off;
       Row row;
-      try {
-        row = decodePayload(schema, buf.data() + off + 4, plen);
-      } catch (const StorageError& e) {
-        return stop(ScanStatus::MidCorruption, e.what());
+      RecordKind kind = RecordKind::Delete;
+      if (plen == kTombstonePayload) {
+        row.emplace_back(bytes::getI64(buf.data() + off + 4));
+      } else {
+        try {
+          row = decodePayload(schema, buf.data() + off + 4, plen);
+        } catch (const StorageError& e) {
+          return stop(ScanStatus::MidCorruption, e.what());
+        }
+        kind = RecordKind::Update;
       }
       const int64_t id = std::get<int64_t>(row[0]);
-      if (id <= lastId) return stop(ScanStatus::MidCorruption, "ids are not strictly ascending");
-      if (cb.onRecord) cb.onRecord(pos + 4 + off, row);
-      lastId = id;
+      if (kind == RecordKind::Update && id > lastId) {
+        kind = RecordKind::Insert;  // 새 id는 언제나 최대 → 표 끝에 붙여도 정렬 유지
+        r.live.emplace_back(id, at);
+        lastId = id;
+      } else {
+        auto it = std::lower_bound(r.live.begin(), r.live.end(), std::make_pair(id, uint64_t{0}));
+        if (it == r.live.end() || it->first != id || it->second == kDead) {
+          return stop(ScanStatus::MidCorruption,
+                      std::string(kind == RecordKind::Delete ? "delete" : "update") + " of a missing id " +
+                          std::to_string(id));
+        }
+        it->second = kind == RecordKind::Delete ? kDead : at;
+      }
+      if (cb.onRecord) cb.onRecord(kind, at, row);
       ++seen;
       off += 4u + plen;
     }
@@ -71,7 +98,7 @@ ScanResult scanFrames(FileIO& io, int fd, uint64_t size, const Schema& schema, c
     ++r.frames;
     pos += total;
   }
-  return r;
+  return finish();
 }
 
 }  // namespace minidb::frame

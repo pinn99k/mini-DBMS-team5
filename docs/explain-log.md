@@ -29,3 +29,15 @@
 ## 락 분리 (#19)
 - 2026-11-17 | `src/storage/table.cpp` `Table::insert` — `pwrite`를 `mu_` 밖에서 해도 읽는 쪽이 반쯤 쓴 프레임을 못 보는 이유 | 대기 |
 - 2026-11-17 | `src/storage/table.cpp` `Table::insert` — 쓰는 쪽이 `writeMu_`만 쥐고 `maxId_`·`fileSize_`를 읽어도 데이터 레이스가 아닌 이유 | 대기 |
+
+## UPDATE·DELETE (#20~#24)
+- 2026-11-17 | D5 로그 추가 + 종류 추론(#20) — 8 B payload가 왜 묘비로만 해석되고, 최대 id를 지우고 재시작해도 그 id가 왜 다시 안 쓰이나 (위임) | 대기 |
+- 2026-11-17 | D6 id 순서 스캔 + maxId 상한(#21) — 파일 순서로 돌면 스캔 중 UPDATE된 행이 왜 빠지나, id 순서에서는 어떤 이상이 남나 (위임) | 대기 |
+- 2026-11-17 | D7 B+tree 정석 삭제(#22) — 병합한 노드가 왜 용량을 넘지 않고, 지운 키가 경계값에 남는 경우를 어떻게 고치나 (위임) | 대기 |
+- 2026-11-17 | D8 INSERT와 섞지 않기·`affectedRows` 배열(#23) — 섞으면 막 넣은 행을 지울 때 무엇을 정해야 하나 (위임) | 대기 |
+- 2026-11-17 | `Table::modify` 대상 찾기를 `writeMu_` 안에서(#24) — 밖에서 찾으면 두 UPDATE가 어떻게 서로를 덮나 (AI) | 대기 |
+- 2026-11-17 | 락 순서 `writeMu_` → `mu_` — `modify`가 커서를 돌릴 때 교착이 안 나는 이유 (AI) | 대기 |
+- 2026-11-17 | 경보(M16) `src/index/bplus_tree.h` `rebalanceInternal` CC 13·`rebalanceLeaf`와 중복 블록 — 왼쪽 빌리기/오른쪽 빌리기/병합 3갈래가 리프·내부에 각각 있음(§9.6 그대로). 리프는 키·값만 옮기고 내부는 자식까지 옮겨 하나로 합치면 분기가 섞임. 왼쪽 회전에서 부모 경계값과 형제 첫 키가 각각 어디로 가나 | 대기 |
+- 2026-11-18 | 경보(M17) `src/storage/table.cpp` `Table::modify` CC 22 → `stageEdits`(찾기·적용, 읽기만)·`commitPending`(쓰기·공개)로 나눔(§5.4b 두 단계). `stageEdits`가 실패하면 왜 파일·인덱스가 전혀 안 바뀌나 | 대기 |
+- 2026-11-18 | 경보(M18) `src/sql/parser.cpp` `Parser::next` CC 11 — 문장 종류(INSERT·SELECT·EXPLAIN·UPDATE·DELETE) 키워드 분기 하나 증가. 종류가 더 늘면 첫 키워드 → 파서 함수 표로. 문장 끝의 `;`·End 검사는 왜 종류와 상관없이 한 곳에 있나 | 대기 |
+- 2026-11-18 | 경보(M19) `src/server/query_handler.cpp` `QueryHandler::handle` CC 12 — 요청 분류(전부 INSERT / 전부 UPDATE·DELETE / SELECT·EXPLAIN 1개)가 늘어남. 분류를 따로 떼는 건 요청 종류가 더 늘 때. `UPDATE ...; SELECT ...`가 왜 400이고 아무것도 실행되지 않나 | 대기 |

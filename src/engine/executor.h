@@ -36,6 +36,10 @@ class Executor {
 
   std::string explain(const SelectStmt& stmt) const;
 
+  // UPDATE·DELETE 1..N개, 한 테이블. 전부 바인딩한 뒤 Table::modify 한 번 (원자적). 문장별 영향 행 수.
+  // UpdateStmt·DeleteStmt가 아닌 문장이 섞이면 std::invalid_argument (호출자가 분류함).
+  std::vector<uint64_t> modify(const std::vector<Statement>& batch) const;
+
  private:
   const Database& db_;
 };

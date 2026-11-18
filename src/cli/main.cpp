@@ -79,8 +79,11 @@ int runScript(const std::string& dataDir, const std::string& file, bool bail) {
             } else if constexpr (std::is_same_v<T, SelectStmt>) {
               TablePrinter printer(std::cout);
               exec.select(s, printer);
-            } else {
+            } else if constexpr (std::is_same_v<T, ExplainStmt>) {
               std::cout << exec.explain(s.select) << '\n';
+            } else {  // UPDATE·DELETE: 문장마다 따로 커밋
+              const uint64_t n = exec.modify({*st}).front();
+              std::cout << (std::is_same_v<T, UpdateStmt> ? "UPDATE " : "DELETE ") << n << '\n';
             }
           },
           *st);

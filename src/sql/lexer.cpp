@@ -8,7 +8,8 @@
 namespace minidb {
 namespace {
 
-constexpr std::array<const char*, 7> kKeywords = {"INSERT", "INTO", "VALUES", "SELECT", "FROM", "WHERE", "EXPLAIN"};
+constexpr std::array<const char*, 10> kKeywords = {"INSERT", "INTO",  "VALUES", "SELECT", "FROM",
+                                                   "WHERE",  "EXPLAIN", "UPDATE", "SET",    "DELETE"};
 
 bool isIdentStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
 bool isIdentChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }

@@ -17,18 +17,23 @@ struct BoundInsert {
   std::vector<Value> values;  // 스키마 순서, id 제외
 };
 
-struct Predicate {
-  size_t column = 0;  // 스키마 컬럼 인덱스 (0 = id)
-  Value value;
-};
-
 struct BoundSelect {
   Table* table = nullptr;
   std::vector<size_t> projection;  // 출력 컬럼 → 스키마 컬럼 인덱스
   std::optional<Predicate> filter;
 };
 
+// UPDATE·DELETE (architecture §7.1). remove면 set은 비어 있다.
+struct BoundModify {
+  Table* table = nullptr;
+  std::optional<Predicate> filter;
+  std::vector<std::pair<size_t, Value>> set;
+  bool remove = false;
+};
+
 BoundInsert bindInsert(const Database& db, const InsertStmt& stmt);
 BoundSelect bindSelect(const Database& db, const SelectStmt& stmt);
+BoundModify bindUpdate(const Database& db, const UpdateStmt& stmt);
+BoundModify bindDelete(const Database& db, const DeleteStmt& stmt);
 
 }  // namespace minidb

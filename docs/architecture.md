@@ -2,9 +2,9 @@
 
 전체 구조와 세부 명세를 담은 **단일 설계 문서**다. 시스템의 현재 모습만 적고, 바뀌면 덮어쓴다.
 
-- 상태: MVP 구현 완료 (2026-11-16). M1~M15 전부 구현, debug(ASan+UBSan)·tsan·release 프리셋에서 테스트 9개 통과. 측정 결과는 `docs/bench.md`.
-- 표기: `[고정]`은 사람이 정한 규칙이다(2026-11-15 큰 설계, 결정 로그 #0~#5). 바꾸려면 묻는다. 표시가 없는 것은 AI가 정한 세부이고, 구현하면서 고칠 수 있다(고치면 결정 로그에 남긴다).
-- `[P1]` `[P2]` `[P3]`는 그 내용이 처음 들어가는 Phase다.
+- 상태: MVP 구현 완료 (2026-11-16, M1~M15). UPDATE·DELETE 확장 구현 완료(2026-11-18, 결정 #20~#24, M16~M19). debug(ASan+UBSan)·tsan·release 프리셋에서 테스트 9개(gtest 7 + 셸 종단 간 2) 통과. 측정 결과는 `docs/bench.md`.
+- 표기: `[고정]`은 사람이 정한 규칙이다(2026-11-15 큰 설계 #0, 이후 사람·위임 결정). 바꾸려면 묻는다. 표시가 없는 것은 AI가 정한 세부이고, 구현하면서 고칠 수 있다(고치면 결정 로그에 남긴다).
+- `[P1]` `[P2]` `[P3]`는 그 내용이 처음 들어가는 Phase다. `[UD]`는 UPDATE·DELETE 확장(M16~M19)에서 들어간 것이다.
 
 ## 목차
 0. 문서 안내
@@ -50,7 +50,9 @@
 
 과제(`assignment.md`): Phase 1 SQL 처리기(CLI + 파일 저장) → Phase 2 메모리 B+ 트리 인덱스 + 100만 건 성능 비교 → Phase 3 스레드 풀 API 서버. 뒤 Phase는 앞 Phase를 그대로 내부 엔진으로 쓴다.
 
-범위 밖 `[고정]`: 페이지, 버퍼 풀, ARIES 복구, CREATE TABLE, NULL, DELETE/UPDATE. 트랜잭션은 INSERT 배치의 원자성까지만 다룬다. 실질 난이도는 Phase 3의 동시성이다.
+범위 밖 `[고정]`: 페이지, 버퍼 풀, ARIES 복구, CREATE TABLE, NULL, compaction(파일 정리). 트랜잭션은 쓰기 배치(INSERT 배치, UPDATE·DELETE 배치) 하나의 원자성까지만 다룬다. 실질 난이도는 Phase 3의 동시성이다.
+
+`[UD]` UPDATE·DELETE는 2026-11-17에 범위에 들어왔다(#20). 원래는 범위 밖이었다.
 
 ## 2. 한 장 요약
 
@@ -72,7 +74,7 @@
 
 구조 불변식 `[고정]`:
 1. **`Table`만** 데이터 파일·인덱스·nextId·락을 함께 만진다. 그 위는 락을 모른다.
-2. **INSERT API는 행 1..N개를 프레임 하나로 커밋한다** (전부 아니면 전무). 한 문장 INSERT는 크기 1짜리 배치.
+2. **쓰기 API는 한 번에 프레임 하나를 커밋한다** (전부 아니면 전무). INSERT는 행 1..N개, UPDATE·DELETE는 문장 1..N개의 변경분 전체. 한 문장은 크기 1짜리 배치.
 3. **결과는 행 단위로 흐른다** (Volcano 방식). 실행기는 행이 나오는 즉시 sink로 민다. 어느 계층도 결과 전체를 모으지 않는다. CLI와 서버는 sink만 다르다.
 4. 파싱된 문장은 `std::variant<...>`이고 `std::visit`으로 처리한다.
 5. 에러는 타입별 예외: `ParseError`, `SchemaError`, `StorageError`.
@@ -90,7 +92,7 @@ Phase 3에서 바뀌는 것은 `Table` 내부와 새 `server/` 모듈뿐이다. 
 | `sql` | Lexer → Parser → AST. 저장소를 모른다 | P1 |
 | `engine` | `Binder`, `Planner`, `Executor`, `RowSink` | P1 |
 | `cli` | `minidb run / dump / serve`, 정렬 출력 sink, dump | P1 |
-| `index` | `BPlusTree<Cap>`, 벌크 로더. I/O·락 없음 | P2 |
+| `index` | `BPlusTree<Cap>`, 벌크 로더, 삭제·범위 순회(UD). I/O·락 없음 | P2 |
 | `server` | ThreadPool, HTTP 어댑터, 요청 검증, NDJSON/JSON sink, fsync 스레드, 종료 | P3 |
 
 ```
@@ -151,15 +153,26 @@ frame   = frame_len u32 | record_count u32 | record × record_count | crc32 u32
           frame_len = (record_count + records)의 바이트 길이
           crc32는 frame_len과 같은 바이트를 덮는다
 record  = payload_len u32 | payload
-payload = id i64 | 스키마 순서의 필드들
+payload = id i64 | 스키마 순서의 필드들          ← 전체 레코드 (INSERT·UPDATE)
+        | id i64                                ← 묘비 (DELETE), payload_len = 8   [UD]
           INT → i64 ; VARCHAR → len u16 + UTF-8 바이트 (len ≤ n)
 record offset = 레코드의 payload_len 위치 (프레임 안)
 상한: payload_len ≤ 64 KiB, frame_len ≤ 4 MiB, record_count ≥ 1
 ```
 
 - 프레임이 원자성의 단위다. 디스크에 온전히 있고 유효하거나, 버려진다.
-- 프레임 최소 길이(`frame_len` 하한) = 4(record_count) + 4(payload_len) + 8(id) = 16.
+- 프레임 최소 길이(`frame_len` 하한) = 4(record_count) + 4(payload_len) + 8(id) = 16. 묘비 하나짜리 프레임이 정확히 이 길이다.
 - 이 포맷은 append-only이고 공개된 바이트는 다시 바뀌지 않는다. 그래서 락 밖에서 읽을 수 있다(§12).
+- `[UD]` **레코드 종류는 바이트에 적지 않고 추론한다** (#20). 바이트 레이아웃과 version 1은 그대로라 기존 파일이 그대로 열린다.
+
+  | 종류 | 판정 (파일 앞에서부터 읽으며) | 뜻 |
+  |---|---|---|
+  | DELETE (묘비) | `payload_len == 8` | 그 id를 지운다 |
+  | INSERT | 전체 레코드, id > 지금까지 본 최대 id | 새 행 |
+  | UPDATE | 전체 레코드, id ≤ 지금까지 본 최대 id | 그 id의 새 버전. 마지막 것이 이긴다 |
+
+  - 전체 레코드의 payload는 언제나 8 B보다 길다. 스키마에 컬럼이 최소 1개 있고(§5.1), INT는 8 B, VARCHAR는 길이 필드만 2 B다. 그래서 8 B짜리 payload는 묘비뿐이다.
+  - 옛 버전 레코드는 파일에 남는다. 파일은 커지기만 한다(compaction은 범위 밖, `refactoring.md`).
 
 ### 5.3 열기와 복구
 
@@ -178,8 +191,9 @@ Table::open(<t>.tbl)
          CRC 불일치: 선언된 끝 == 파일 끝 → 꼬리 손상, 아니면 중간 손상   [고정]
          레코드들이 frame_len을 정확히 채우지 않거나 개수 ≠ record_count → 중간 손상 [고정]
          레코드가 스키마로 디코드되지 않음 (필드 길이 불일치, VARCHAR len > n) → 중간 손상
-         id가 앞 레코드보다 크지 않음 (엄격한 오름차순 위반)          → 중간 손상
-         정상 레코드마다 onRecord(offset, row)
+         [UD] 레코드 종류 판정 (§5.2 표):
+           UPDATE·DELETE인데 그 id가 살아 있지 않음 (넣은 적 없음, 이미 지움) → 중간 손상
+         정상 레코드마다 살아 있는 id 표 갱신 + onRecord(kind, offset, row)
        꼬리 손상 → 잘라낼 바이트를 <t>.tbl.torn(있으면 .torn.N)에 복사·fsync
                  → ftruncate(프레임 시작) → fsync → 경고 로그 → 정상 시작      (#2)
        중간 손상 → StorageError, 시작 거부                                 [고정]
@@ -187,8 +201,10 @@ Table::open(<t>.tbl)
 
 - `frame_len` 범위 검사 때문에 꼬리 손상으로 잘라내는 양은 언제나 프레임 하나(≤ 4 MiB + 8, `totalSize = 4 + frame_len + 4`) 이하다. 그래서 `.torn` 복사 비용이 작다.
 - **판정 규칙의 구현은 `frame::scanFrames`(`src/storage/frame_scan.*`) 하나다** (#18). 스캐너는 읽기만 하고 결과(정상 / 꼬리 손상 위치 / 중간 손상 위치·이유)를 돌려준다. `Table::recover`는 그 결과로 자르거나 거부하고, `minidb dump`는 출력만 한다. 그래서 dump가 "ok"라고 한 파일은 반드시 열린다.
-- `onRecord` 콜백: `Table::recover`는 벌크 로더에 넣는다. id 오름차순 검사는 스캐너가 하므로 로더에는 항상 오름차순으로 들어간다. `maxId`는 스캔 결과의 `lastId`다.
-- `[고정]` `nextId = 본 것 중 최대 id + 1` (빈 테이블은 1). 레코드 수 + 1이 아니다.
+- `[UD]` 스캐너는 **살아 있는 id 표**(id 오름차순 배열, id마다 최신 레코드 위치)를 들고 간다. INSERT는 끝에 붙이고(id가 항상 최대라 정렬이 유지됨), UPDATE는 위치를 바꾸고, DELETE는 지움 표시를 한다. UPDATE·DELETE 대상 검사도 이 표로 한다. 그래서 dump와 recover의 판정이 여전히 하나다(#18). 메모리는 행당 16 B(1M 행 16 MB)이고 시작할 때만 쓴다.
+- 스캔 결과 `live`(살아 있는 (id, 위치) 오름차순)로 `Table::recover`가 벌크 로딩한다. `rowCount` = `live` 크기, `maxId` = 스캔 결과의 `lastId`(지운 id 포함, 본 것 중 최대).
+- 꼬리 손상 판정은 레코드를 보기 전에 끝난다(헤더 부족·길이 부족·끝 프레임 CRC). 그래서 잘라낸 프레임의 UPDATE·DELETE는 표에 반영되지 않는다. 배치 하나가 통째로 사라진다.
+- `[고정]` `nextId = 본 것 중 최대 id + 1` (빈 테이블은 1). 레코드 수 + 1이 아니다. `[UD]` 지운 id의 INSERT 레코드도 파일에 남으므로, 최대 id를 지우고 재시작해도 그 id는 다시 쓰이지 않는다.
 - `[고정]` 열린 뒤의 읽기는 이미 검증된 바이트를 믿는다. 읽을 때마다 CRC를 다시 계산하지 않는다.
 
 ### 5.4 쓰기 (insert)
@@ -212,10 +228,39 @@ Table::insert(rows)                        // id 없는 행 1..N, Binder가 검�
 - `pwriteAll`은 짧은 쓰기를 이어 쓴다. `EINTR`이면 재시도한다.
 - 실패한 INSERT는 id를 소모하지 않는다. id는 재사용하지 않는다 `[고정]`.
 
+### 5.4b 수정 (update·delete) `[UD]`
+
+```
+Table::modify(edits)                       // 문장 1..N개, Binder·Planner를 거친 상태 (#20, #23, #24)
+  writeMu_                                  // 대상 찾기부터 쓰기까지. 읽는 쪽은 안 막힘
+  쓰기 불가 상태 → StorageError
+  pending = {}                              // id → 최종 상태(새 행 | 지움). 이 배치 안에서만
+  문장마다 (순서대로):
+    대상 행: edit.id가 있으면 findById 하나, 없으면 scan() 전체 (커서는 mu_ shared만 잠깐씩)
+             pending에 있는 id는 pending의 상태를 본다 (앞 문장의 결과)
+    edit.filter에 맞으면 → 지움 또는 SET 적용 → pending[id] 갱신, 이 문장의 개수 + 1
+    pending 크기 합이 프레임 상한을 넘으면 → SchemaError("too many rows changed")  // 쓰기 전
+  pending이 비면 → 아무것도 쓰지 않고 개수만 반환
+  FrameCodec::encode(pending을 id 순으로: 새 행은 전체 레코드, 지움은 묘비)
+  pwriteAll(off = fileSize_) — 실패 처리는 §5.4와 같다 (ftruncate, 안 되면 쓰기 불가)
+  공개 (mu_ unique): fileSize_ += len → index_ 갱신(assign / erase) → rowCount_ -= 지운 수
+  ← 문장별 개수
+```
+
+- **대상 찾기를 `writeMu_` 안에서 하는 이유**: 다른 쓰는 쪽이 끼어들 수 없으니 읽은 행이 쓸 때까지 그대로다. 밖에서 찾고 안에서 쓰면, 두 UPDATE가 같은 행의 서로 다른 컬럼을 바꿀 때 나중 것이 먼저 것의 변경을 덮는다(잃어버린 갱신). `writeMu_`는 쓰는 쪽끼리만 막으므로 읽는 쪽은 그대로 돈다.
+- 레코드는 행 전체를 쓴다(바뀐 컬럼만 쓰지 않는다). 그래서 최신 레코드 하나만 읽으면 행이 완성된다.
+- 프레임 상한(4 MiB) 때문에 한 요청이 바꿀 수 있는 행 수에 한계가 있다. 묘비는 12 B라 약 35만 행, `name VARCHAR(32), age INT` 행은 약 13만 행이다. 넘으면 아무것도 쓰지 않고 400이다. 여러 프레임에 걸친 원자 커밋은 커밋 표시가 필요해 포맷이 바뀐다(`refactoring.md`).
+- 같은 id를 한 배치에서 여러 번 바꿔도 프레임에는 최종 상태 하나만 들어간다. 지운 행을 다시 UPDATE하면 0행이다.
+
 ### 5.5 읽기
 
-- `Table::scan()`: 호출 시점의 `fileSize_`를 끝 지점으로 고정한 `Cursor`를 돌려준다 `[고정]`. `Cursor::next(Row&)`는 프레임 하나를 버퍼로 `pread`하고 레코드를 하나씩 디코드한다. 스캔 하나가 쓰는 메모리는 테이블 크기와 무관하게 프레임 버퍼 하나(≤ 4 MiB)다.
-- `Table::findById(id)` `[P2]`: 인덱스에서 오프셋을 찾고 → `payload_len`(4B) `pread` → payload `pread` → 디코드.
+- `[UD]` `Table::scan()`은 **인덱스(id) 순서**로 돈다 (#21). 파일 순서로 돌면 옛 버전이 섞이고, 스캔 중에 수정된 행의 새 버전이 스냅샷 끝 뒤에 있어 빠진다.
+  - 호출 시점의 `maxId_`를 상한으로 고정한다 `[고정]`. 이후의 INSERT는 id가 상한보다 커서 보이지 않는다. 그래서 동시 INSERT 배치는 통째로 보이거나 통째로 안 보인다(기존 K 배수 테스트).
+  - `Cursor::next(Row&)`는 배치가 비면 `mu_` shared를 잡고 다음 id부터 최대 256개의 (id, offset)과 그 순간의 `fileSize_`를 복사한 뒤 락을 놓는다. 그다음 락 밖에서 레코드를 읽는다.
+  - 대가: 배치 사이에 커밋된 UPDATE·DELETE는 반영된다. 여러 행짜리 UPDATE·DELETE가 스캔 도중 커밋되면 일부 행만 새 상태로 보일 수 있다(READ COMMITTED 수준). 한 행은 한 번만, id 오름차순으로 나온다.
+  - 읽기 버퍼: 오프셋이 버퍼 바로 뒤(64 KiB 안)면 64 KiB를 미리 읽고, 멀리 떨어진 레코드(수정된 행의 새 버전)는 그 레코드만 따로 읽는다. 수정 없는 테이블은 오프셋이 연속이라 예전처럼 순차 읽기가 된다.
+  - 스캔 하나가 쓰는 메모리는 테이블 크기와 무관하다: (id, offset) 256개 + 읽기 버퍼 64 KiB + 레코드 하나.
+- `Table::findById(id)` `[P2]`: 인덱스에서 오프셋을 찾고 → `payload_len`(4B) `pread` → payload `pread` → 디코드. 지운 id는 인덱스에 없으므로 빈 결과다.
 - `pread` 실패는 `StorageError`다. 스트리밍 중이면 P3에서 마지막 줄 `"ok":false`가 된다.
 
 ### 5.6 내구성 `[고정]`
@@ -254,7 +299,14 @@ public:
   static std::unique_ptr<Table> open(std::filesystem::path tbl, Schema schema, FileIO& io);
   const Schema& schema() const;
   std::vector<int64_t> insert(const std::vector<std::vector<Value>>& rows);
-  Cursor scan() const;
+  struct Edit {                                       // [UD] UPDATE·DELETE 문장 하나
+    std::optional<int64_t> id;                        // 있으면 그 id 한 행 (IndexScan)
+    std::optional<Predicate> filter;                  // 없으면 모든 행 (FullScan)
+    std::vector<std::pair<size_t, Value>> set;        // 컬럼 인덱스 → 새 값
+    bool remove = false;                              // true = DELETE
+  };
+  std::vector<uint64_t> modify(const std::vector<Edit>& edits);   // 문장별 영향 행 수
+  Cursor scan() const;                                // [UD] id 순서
   std::optional<Row> findById(int64_t id) const;    // P2
   uint64_t rowCount() const;
   void sync();
@@ -273,14 +325,17 @@ public:
 
 ### 6.1 문법
 
-`[고정]` 범위: `INSERT INTO t [(cols)] VALUES (v, ...);` / `SELECT * | cols FROM t [WHERE col = v];`, P2부터 `EXPLAIN SELECT ...`.
+`[고정]` 범위: `INSERT INTO t [(cols)] VALUES (v, ...);` / `SELECT * | cols FROM t [WHERE col = v];`, P2부터 `EXPLAIN SELECT ...`, `[UD]` `UPDATE t SET col = v [, ...] [WHERE col = v];` / `DELETE FROM t [WHERE col = v];`.
 
 ```
 script     := { statement? ';' } [ statement ]          -- 마지막 ';'는 생략 가능, 빈 문장(;;)은 건너뜀
-statement  := insert | select | explain
+statement  := insert | select | explain | update | delete
 insert     := INSERT INTO ident [ '(' ident { ',' ident } ')' ] VALUES '(' literal { ',' literal } ')'
-select     := SELECT ( '*' | ident { ',' ident } ) FROM ident [ WHERE ident '=' literal ]
+select     := SELECT ( '*' | ident { ',' ident } ) FROM ident [ where ]
 explain    := EXPLAIN select                              -- P2
+update     := UPDATE ident SET ident '=' literal { ',' ident '=' literal } [ where ]   -- UD
+delete     := DELETE FROM ident [ where ]                                             -- UD
+where      := WHERE ident '=' literal
 literal    := integer | string
 integer    := [ '-' ] digit { digit }                     -- int64 범위 밖이면 ParseError
 string     := "'" { char | "''" } "'"                     -- '' 는 작은따옴표 하나
@@ -289,7 +344,7 @@ string     := "'" { char | "''" } "'"                     -- '' 는 작은따옴
 ### 6.2 Lexer
 
 - `[고정]` 키워드는 대소문자를 무시한다. 문장은 토큰으로 나눈다(`split(";")` 금지). 그래서 문자열 안의 `,`와 `;`는 구분자가 아니다.
-- 키워드: `INSERT INTO VALUES SELECT FROM WHERE EXPLAIN`. 식별자는 대소문자를 구분한다.
+- 키워드: `INSERT INTO VALUES SELECT FROM WHERE EXPLAIN UPDATE SET DELETE`. 식별자는 대소문자를 구분한다. 키워드는 예약어라 컬럼·테이블 이름으로 쓸 수 없다(`[UD]` `update`·`set`·`delete`도).
 - `--`부터 줄 끝까지는 주석이다(`.sql` 파일 편의).
 - 문자열 리터럴은 UTF-8 유효성을 검사한다. 잘못된 바이트는 `ParseError`. P3 JSON 출력이 항상 유효하도록 입구에서 막는 것이다.
 - 닫히지 않은 따옴표는 `ParseError`(시작 위치 line:col)이고, 회복할 수 없으므로 파일의 나머지 실행을 중단한다.
@@ -304,7 +359,10 @@ struct InsertStmt  { std::string table; std::vector<std::string> columns; std::v
 struct SelectStmt  { std::string table; std::vector<std::string> columns; /* 비면 * */
                      std::optional<Condition> where; SourcePos pos; };
 struct ExplainStmt { SelectStmt select; };                                  // P2
-using Statement = std::variant<InsertStmt, SelectStmt /*, ExplainStmt (P2) */>;
+struct Assignment  { std::string column; SourcePos columnPos; Literal value; };            // UD
+struct UpdateStmt  { std::string table; std::vector<Assignment> set; std::optional<Condition> where; SourcePos pos; };
+struct DeleteStmt  { std::string table; std::optional<Condition> where; SourcePos pos; };
+using Statement = std::variant<InsertStmt, SelectStmt, ExplainStmt, UpdateStmt, DeleteStmt>;
 
 class Parser {
 public:
@@ -334,6 +392,10 @@ AST를 테이블 포인터·컬럼 인덱스·검증된 값으로 바꾼다. 아
 | 타입 불일치 (INT에 문자열, VARCHAR에 정수, WHERE 양쪽) | `SchemaError` |
 | VARCHAR 바이트 길이 > n | `SchemaError` |
 | SELECT 목록 | `id` 포함 가능, 중복 허용, `*` = id + 모든 컬럼 |
+| `[UD]` UPDATE SET에 `id` | `SchemaError` (id는 바꿀 수 없음) |
+| `[UD]` UPDATE SET에 같은 컬럼 두 번 | `SchemaError` |
+| `[UD]` SET 값 | INSERT 값과 같은 검사(타입, VARCHAR 길이) |
+| `[UD]` UPDATE·DELETE의 WHERE | SELECT의 WHERE와 같은 검사. 없으면 모든 행 |
 
 ### 7.2 Planner: 접근 경로
 
@@ -347,6 +409,7 @@ AccessPath choose(const BoundSelect&);
 - P1은 항상 `FullScan`이다. 이것이 불변식 6의 선택 지점이다.
 - `[고정]` P2부터 WHERE가 `id = <int>`일 때만 `IndexScan`, 나머지는 `FullScan`.
 - `[고정]` EXPLAIN 출력: `IndexScan(<table>, id=<v>)` | `FullScan(<table>)` | `FullScan(<table>, filter <col>=<v>)`. 문자열 값은 SQL 리터럴 형태(`'kim'`)로 적는다.
+- `[UD]` UPDATE·DELETE도 같은 규칙으로 고른다(`choosePath(filter)`). `IndexScan`이면 `Table::Edit::id`, `FullScan`이면 `Table::Edit::filter`가 된다. EXPLAIN은 SELECT에만 있다.
 
 ### 7.3 Executor와 RowSink
 
@@ -365,10 +428,12 @@ public:
   std::vector<int64_t> insert(const std::vector<InsertStmt>& batch);  // 1..N, 한 테이블, 원자적
   void select(const SelectStmt& stmt, RowSink& sink);
   std::string explain(const SelectStmt& stmt);                        // P2
+  std::vector<uint64_t> modify(const std::vector<Statement>& batch);  // UD: UPDATE·DELETE 1..N, 한 테이블, 원자적
 };
 ```
 
 - `insert`: 모든 문장을 바인딩한 뒤(하나라도 실패하면 아무것도 쓰지 않음) `Table::insert` 한 번. 테이블이 둘 이상이면 `SchemaError`(P3에서 400).
+- `[UD]` `modify`: 같은 방식으로 모든 문장을 바인딩·계획한 뒤 `Table::modify` 한 번. 행 찾기·필터·SET 적용은 `Table::modify` 안에서 한다(§5.4b, `writeMu_` 안이어야 해서). 테이블이 둘 이상이면 `SchemaError`.
 - `select`: `begin` → 행마다 필터 → 투영 → `sink.row`. false면 멈추고 `end` 없이 반환한다. 스캔이 끝나면 `end(count)`. 예외는 그대로 위로 올라가고 `end`는 부르지 않는다.
 - 저장소는 당기고(`Cursor::next`) 실행기는 민다(`sink.row`). Volcano 원형은 연산자 트리 전체가 pull이다. 여기서는 연산자가 scan → filter → project로 고정이라 트리 없이 루프 하나로 줄였다. WHERE가 확장되면 트리로 바꾼다(`refactoring.md`).
 - IndexScan도 같은 sink 인터페이스로 0개 또는 1개 행을 민다 `[고정]`.
@@ -383,26 +448,27 @@ minidb serve [--port 8080] [--workers N] [--queue 1024] [--data DIR]     (P3)
 
 - `--data` 기본값은 `./data`. 컨테이너에서는 `/data` 볼륨을 쓴다(§15).
 - **run**: 문장을 하나씩 실행한다.
-  - INSERT 출력: `INSERT 1 (id=5)`.
+  - INSERT 출력: `INSERT 1 (id=5)`. `[UD]` UPDATE·DELETE 출력: `UPDATE 3`, `DELETE 0` (영향 행 수). CLI는 문장마다 따로 커밋한다.
   - SELECT 출력: 헤더 → 구분선 → 행 → `(N rows)`.
   - `[고정]` 컬럼 폭은 스키마에서 나온다(`max(이름 길이, VARCHAR n | INT 20)`). 그래서 버퍼링 없이 행이 나오는 즉시 출력한다. VARCHAR 폭은 최대 64로 자른다. `VARCHAR(65535)`를 65535칸으로 채우지 않기 위해서이고, 64바이트를 넘는 값은 정렬이 어긋난다.
   - 문자열 안의 제어 문자(`\n` `\t` 등)는 이스케이프해서 정렬을 지킨다. 한글처럼 여러 바이트인 글자는 폭이 어긋날 수 있다(바이트 기준 폭).
 - **에러** `[고정]`: `<file>:<line>:<col>: <Type>: <message>`로 출력하고 다음 문장으로 간다. `--bail`이면 첫 에러에서 멈춘다.
 - **종료 코드**: 0 = 모두 성공, 1 = 실패한 문장이 있음, 2 = 사용법 오류나 시작 실패(복구 거부 등).
-- **dump**: `Table`을 거치지 않고 파일을 직접 읽는 읽기 전용 도구다. 자르지 않는다. 헤더를 출력한 뒤 프레임마다 `frame #k @off len=… records=… crc=ok|BAD`를, 레코드마다 `  @off id=… <필드들>`을 출력한다. 첫 비정상 프레임에서 꼬리 손상인지 중간 손상인지 표시하고 멈춘다. 손상 테스트와 시연에 쓴다.
+- **dump**: `Table`을 거치지 않고 파일을 직접 읽는 읽기 전용 도구다. 자르지 않는다. 헤더를 출력한 뒤 프레임마다 `frame #k @off len=… records=… crc=ok`를, 레코드마다 `  @off id=… <필드들>`을 출력한다. `[UD]` UPDATE 레코드는 `  @off update id=… <필드들>`, 묘비는 `  @off delete id=…`. 끝에 `N frames, R records, L live, ok`. 첫 비정상 프레임에서 꼬리 손상인지 중간 손상인지 표시하고 멈춘다. 손상 테스트와 시연에 쓴다.
 
 ## 9. 인덱스 `[P2]`
 
 ### 9.1 설계 규칙 `[고정]`
 
-- 메모리 B+ 트리, `id(i64) → record offset(u64)`. 유일 키, 삭제 없음, 범위 질의 없음.
+- 메모리 B+ 트리, `id(i64) → record offset(u64)`. 유일 키. `[UD]` 삭제(`erase`), 값 바꾸기(`assign`), id 범위 순회(`range`)가 있다 (#21, #22). 원래는 삭제·범위 질의가 없었다.
 - 노드 용량은 컴파일 시간 템플릿 인자. 운영 128, 테스트는 3과 4.
 - 노드 안에 고정 크기 배열을 두고, 키 배열과 값 배열을 나눈다(SoA). 노드 안 `std::vector` 금지.
 - 리프 구조체와 내부 노드 구조체를 따로 두고, 공통 헤더에 `isLeaf`를 둔다. 가상 함수 없음.
 - 리프: `keys[]`, `offsets[]`, `count`, `next`(소유하지 않는 원시 포인터). 내부 노드: `keys[]`, `children[]`(count+1개, `std::unique_ptr` 소유).
 - 분할은 bottom-up. 내려가는 경로를 스택에 기록하고 부모 포인터는 두지 않는다. 런타임 분할 정책은 반반.
 - 리프 분할은 copy-up(오른쪽 리프의 첫 키를 부모에 복사, 리프에도 남음). 내부 노드 분할은 push-up(가운데 키를 부모로 옮기고 양쪽에서 뺀다).
-- 열 때 벌크 로딩으로 다시 만든다(파일 순서 = id 오름차순).
+- 열 때 벌크 로딩으로 다시 만든다(복구 스캔의 살아 있는 id 표 = id 오름차순, §5.3).
+- `[UD]` 삭제는 bottom-up이다. 내려간 경로를 스택에 기록하고, 모자라면 형제에게 빌리고, 안 되면 병합한다(§9.6).
 
 ### 9.2 수치 (Cap = 용량)
 
@@ -430,8 +496,31 @@ minidb serve [--port 8080] [--workers N] [--queue 1024] [--data DIR]     (P3)
 
 ### 9.5 통합
 
-- `Table`이 `BPlusTree<128> index_`를 가진다. 복구 스캔의 `onRecord`가 벌크 로더를 채운다. `insert`는 성공한 뒤 마지막 단계에서 프레임의 모든 id를 넣는다(§5.4 순서).
-- `Planner`가 `IndexScan`을 고르고, 실행기는 `Table::findById`를 부른다.
+- `Table`이 `BPlusTree<128> index_`를 가진다. 복구 스캔 결과의 `live`가 벌크 로더를 채운다. `insert`는 성공한 뒤 마지막 단계에서 프레임의 모든 id를 넣는다(§5.4 순서). `[UD]` `modify`는 같은 단계에서 UPDATE한 id는 `assign`, 지운 id는 `erase`한다.
+- `Planner`가 `IndexScan`을 고르고, 실행기는 `Table::findById`를 부른다. `[UD]` 전체 스캔 커서는 `range(from, to, 256)`으로 id 순서를 받는다.
+
+### 9.6 삭제 `[UD]`
+
+```
+erase(key)
+  루트에서 리프까지 내려가며 (노드, 자식 번호)를 스택에 기록
+  리프에서 키를 뺀다. 없으면 false
+  리프가 루트면: 비면 트리를 비운다. 끝
+  리프 키 < 최소 →
+    왼쪽 형제가 최소보다 많음 → 마지막 키를 빌려 온다. 부모 경계값 = 내 첫 키
+    오른쪽 형제가 최소보다 많음 → 첫 키를 빌려 온다. 부모 경계값 = 오른쪽의 새 첫 키
+    아니면 병합: 왼쪽 형제가 있으면 내가 왼쪽에 합쳐지고, 없으면 오른쪽이 나에게 합쳐진다.
+                 부모에서 경계값 하나와 자식 하나가 빠진다. next 포인터를 잇는다
+  부모(내부 노드) 키 < 최소 → 같은 방식으로 위로:
+    빌리기 = 회전(부모 경계값이 내려오고, 형제의 끝 키가 올라감, 자식 하나가 옮겨 감)
+    병합 = 왼쪽 + 부모 경계값 + 오른쪽
+  루트(내부)의 키가 0개가 되면 유일한 자식이 루트가 된다 (높이 - 1)
+  마지막으로 지운 키가 경계값으로 남아 있으면 그 오른쪽 서브트리의 최솟값으로 바꾼다
+```
+
+- 병합이 용량을 넘지 않는 이유: 빌릴 수 없다는 것은 형제가 정확히 최소라는 뜻이다. 리프는 최소 + (최소 - 1) = 2⌊(Cap+1)/2⌋ - 1 ≤ Cap, 내부는 최소 + (최소 - 1) + 경계값 1 = 2⌊Cap/2⌋ ≤ Cap.
+- 경계값은 "오른쪽 서브트리의 최솟값"이라는 규칙(§9.4-4) 때문에, 리프의 첫 키를 지우면 위쪽 어딘가의 경계값이 지운 키를 그대로 들고 있을 수 있다. 그런 경계값은 경로에 많아야 하나다. 그래서 마지막에 지운 키로 한 번 더 내려가며 고친다.
+- `validate()`(§9.4)의 다섯 규칙은 그대로다. 테스트는 `std::map`과 비교하는 무작위 삽입·삭제, N번마다 `validate()`.
 
 ## 10. 벤치마크 `[P2·P3]`
 
@@ -472,8 +561,8 @@ public:
 
 ### 11.2 요청 형태 `[고정]`
 
-- 허용하는 바디(마지막 `;`는 선택): `SELECT` 정확히 1개, `EXPLAIN SELECT` 정확히 1개, `INSERT` 1~1000개(배치, 전부 INSERT).
-- 빈 바디, 종류가 섞인 요청, SELECT 여러 개, 1000개 초과 → 400, 아무것도 실행하지 않음.
+- 허용하는 바디(마지막 `;`는 선택): `SELECT` 정확히 1개, `EXPLAIN SELECT` 정확히 1개, `INSERT` 1~1000개(배치, 전부 INSERT), `[UD]` `UPDATE`·`DELETE` 1~1000개(배치, 전부 UPDATE 또는 DELETE, 둘은 섞어도 됨) (#23).
+- 빈 바디, 종류가 섞인 요청(INSERT와 UPDATE·DELETE 포함), SELECT 여러 개, 1000개 초과 → 400, 아무것도 실행하지 않음.
 - 배치는 테이블 하나만 대상으로 한다(여러 테이블이면 400).
 - 분류는 `Parser::next()`로 전부 파싱한 뒤에 한다. 바디가 1 MiB 이하라 AST를 모두 들고 있어도 된다.
 
@@ -485,13 +574,16 @@ public:
 4. 쓰기 실패 → 시작 크기로 `ftruncate`, `nextId` 복원, 락 해제 → 500. 아무것도 반영되지 않음.
 5. 성공 → `fileSize` 갱신, `nextId` 증가, 모든 id를 인덱스에 삽입, 락 해제.
 
-읽는 쪽은 배치의 일부만 보는 일이 없다. `fileSize`는 프레임 전체를 쓴 뒤에만 움직이므로, 모든 스캔의 끝 지점이 프레임 경계다. 이 흐름은 `Executor::insert` + `Table::insert`(§5.4)가 이미 하는 일이다. 서버가 따로 구현하지 않는다.
+읽는 쪽은 INSERT 배치의 일부만 보는 일이 없다. 스캔은 시작 시점의 `maxId`까지만 보고(§5.5), `findById`는 공개 순간에 한꺼번에 바뀌는 인덱스를 본다. 이 흐름은 `Executor::insert` + `Table::insert`(§5.4)가 이미 하는 일이다. 서버가 따로 구현하지 않는다.
+
+`[UD]` UPDATE·DELETE 배치도 같다: 전부 파싱·검증 → `Executor::modify` → `Table::modify`(§5.4b)가 문장을 순서대로 적용하고 프레임 하나로 쓴다. 실패하면 아무것도 반영되지 않는다. 문장 N은 문장 1..N-1의 결과를 본다. 단, 진행 중인 전체 스캔은 배치의 일부 행만 새 상태로 볼 수 있다(§5.5, #21).
 
 ### 11.4 응답 `[고정]`
 
 - 첫 바이트 전에 난 에러: 상태 코드 + `{"ok":false,"error":{"type":"...","message":"...","line":L,"col":C}}` (line/col은 있을 때만).
 - 상태 코드 매핑: `ParseError` 400, `SchemaError` 404(없는 테이블)·400(그 외), `StorageError` 500, 큐 가득 503, 바디 초과 413.
 - INSERT 배치 → 200 `{"ok":true,"insertedIds":[...]}` (커밋 후 전송).
+- `[UD]` UPDATE·DELETE 배치 → 200 `{"ok":true,"affectedRows":[n1,n2,...]}` (문장 순서대로 영향 행 수, 커밋 후 전송) (#23). 변경분이 프레임 상한을 넘으면 `SchemaError` 400.
 - EXPLAIN → 200 `{"ok":true,"plan":"..."}`.
 - SELECT → 200 `application/x-ndjson`, chunked, 한 줄에 JSON 값 하나:
   ```
@@ -528,16 +620,16 @@ public:
 P1·P2에는 락이 없다. P3에서 `Table` 안에 락 두 개를 둔다 (#19, 기준선의 "`shared_mutex` 하나"를 바꿈).
 
 - `mu_` (`std::shared_mutex`): **공개 상태**(`fileSize_`·`maxId_`·`rowCount_`·`index_`·쓰기 불가 플래그)를 지킨다. 읽는 쪽은 shared, 쓰는 쪽은 공개하는 순간에만 unique.
-- `writeMu_` (`std::mutex`): **쓰는 쪽끼리의 순서**. 인코딩·`pwrite`·실패 시 `ftruncate`는 이 락만 쥐고 한다. 읽는 쪽은 이 락을 모른다.
+- `writeMu_` (`std::mutex`): **쓰는 쪽끼리의 순서**. 인코딩·`pwrite`·실패 시 `ftruncate`는 이 락만 쥐고 한다. `[UD]` `modify`의 대상 찾기(스캔·조회)도 이 락 안에서 한다(§5.4b). 읽는 쪽은 이 락을 모른다.
 - 규칙: 공개 상태를 바꾸는 건 두 락을 모두 쥔 쓰는 쪽뿐이다. 그래서 쓰는 쪽은 `writeMu_`만 쥐고도 공개 상태를 읽을 수 있다(동시에 바꾸는 쪽이 없음).
 - 이유: 기존에는 쓰는 쪽이 unique 락을 쥔 채 `pwrite`(시스템 콜, µs 단위)까지 해서, 읽는 쪽이 그동안 잠들었다. 혼합 부하에서 스레드를 늘리면 오히려 느려졌다. 측정과 분석은 `docs/lock-split.md`.
 
 | 상태 | 쓰기 | 읽기 |
 |---|---|---|
-| 파일 바이트 | insert (`writeMu_`만) | scan·findById (락 밖에서 pread) |
-| `fileSize_`·`maxId_`·`rowCount_` | 공개 순간 (`writeMu_` + `mu_` unique) | scan 시작 시 한 번 등 (shared) |
+| 파일 바이트 | insert·modify (`writeMu_`만) | scan·findById (락 밖에서 pread) |
+| `fileSize_`·`maxId_`·`rowCount_` | 공개 순간 (`writeMu_` + `mu_` unique) | scan 시작 시(`maxId_`)·배치마다(`fileSize_`) 등 (shared) |
 | 쓰기 불가 플래그 | 되돌리기 실패 시 (`writeMu_` + `mu_` unique) | insert(`writeMu_`)·`writable()`(shared) |
-| `index_` | 공개 순간 (`writeMu_` + `mu_` unique) | findById는 트리 조회 동안만 (shared), 파일 읽기는 락 해제 후 |
+| `index_` | 공개 순간 (`writeMu_` + `mu_` unique). insert·assign·erase | findById는 트리 조회 동안만, scan은 256개 복사 동안만 (shared). 파일 읽기는 락 해제 후 |
 | `Database` 테이블 목록 | 시작 시 한 번 | 이후 불변 → 락 없음 |
 
 락 밖에서 파일을 읽어도 안전한 이유:
@@ -545,7 +637,9 @@ P1·P2에는 락이 없다. P3에서 `Table` 안에 락 두 개를 둔다 (#19, 
 - 실패 시 자르기는 공개된 `fileSize_` 뒤쪽만 건드린다. 그 바이트를 본 읽기 쪽은 없다.
 - 같은 이유로 `pwrite` 자체도 `mu_` 밖에서 해도 된다. 쓰는 중인 바이트는 `fileSize_` 너머라 읽는 쪽이 보지 못하고, 다른 쓰는 쪽은 `writeMu_`에서 기다린다 (#19).
 - `pread`/`pwrite`는 위치를 공유하지 않으므로, 같은 fd를 여러 스레드가 써도 된다.
-- DELETE가 없어서 공개된 바이트는 바뀌지 않는다. DELETE를 넣으면 이 전제가 깨진다.
+- `[UD]` UPDATE·DELETE도 **덧붙이기만** 하므로(#20) 공개된 바이트는 여전히 바뀌지 않는다. 읽는 쪽이 옛 오프셋을 들고 있다가 그사이 수정이 공개되면 옛 버전을 읽는다. 그 행을 인덱스에서 찾은 순간(락 안)이 읽기 시점이므로 정상이다.
+- `[UD]` 락 순서는 언제나 `writeMu_` → `mu_`다. `modify`가 `writeMu_`를 쥔 채 커서를 돌리면 커서가 `mu_` shared를 잠깐씩 잡고, 공개할 때 `mu_` unique를 잡는다. 거꾸로 잡는 곳이 없어 교착이 없다.
+- `[UD]` 대상 찾기는 `writeMu_` 안이라 다른 쓰는 쪽(INSERT 포함)을 그만큼 기다리게 한다. WHERE 없는 1M 행 UPDATE면 전체 스캔 시간(수십 ms)만큼이다. 읽는 쪽은 기다리지 않는다.
 - fsync 스레드는 `fsync(fd)`만 부른다. `pwrite`와 동시에 불러도 된다. fd는 fsync 스레드를 join한 뒤에 닫는다.
 
 ## 13. 에러 흐름
@@ -591,6 +685,13 @@ P1·P2에는 락이 없다. P3에서 `Table` 안에 락 두 개를 둔다 (#19, 
 | P3 | 요청 형태: 빈 바디·혼합·SELECT 여러 개·1000개 초과 → 400, 1 MiB 초과 → 413, 큐 가득 → 503, 없는 테이블 → 404, `/health` → 200 |
 | P3 | SIGTERM을 부하 중에 보내도 처리 중이던 요청이 끝나고, 커밋된 행이 재시작 후 남아 있음 |
 | P3 | 처리량 비교 `docs/bench.md` (§10) |
+| UD | B+tree: 무작위 삽입·삭제를 `std::map`과 비교(용량 3, 4, 128), N번마다 `validate()`, 전부 지우면 빈 트리, 루트 축소, `range` |
+| UD | 저장소: update·delete → 조회·스캔·재시작 왕복, 최대 id를 지우고 재시작해도 id 재사용 없음, 같은 배치 안 순서(UPDATE 후 DELETE, DELETE 후 UPDATE = 0행) |
+| UD | 손상: UPDATE·DELETE 프레임의 꼬리 손상은 잘리고 배치 전체가 사라짐(+ `.torn`), 중간 손상은 거부, 없는 id·지운 id의 UPDATE·DELETE 레코드는 중간 손상, dump와 recover 판정 일치 |
+| UD | 원자성: modify 쓰기 실패 주입 → 크기·인덱스·행 수 그대로, 자르기 실패 → 쓰기 불가, 프레임 상한 초과 → `SchemaError` + 아무것도 안 씀 |
+| UD | 동시성(TSan): 두 스레드가 같은 행의 다른 컬럼을 반복 UPDATE해도 잃어버린 갱신 없음, UPDATE·DELETE 중 스캔이 같은 id를 두 번 내지 않고 오름차순 |
+| UD | SQL·엔진: UPDATE·DELETE 파싱과 문법 오류 위치, `SET id`·중복 SET·타입 불일치·없는 컬럼 → `SchemaError`, id 경로와 필터 경로 |
+| UD | 서버: 배치 → `affectedRows` 배열, INSERT와 섞기·SELECT와 섞기 → 400, 여러 테이블 → 400, 없는 테이블 → 404. CLI 종단 간 `UPDATE n`·`DELETE n`·dump |
 
 ## 15. 빌드와 개발 환경
 
@@ -647,6 +748,10 @@ docs/       architecture.md  decisions.md  decisions-summary.md  refactoring.md 
 | M13 | HTTP 계층·NDJSON | P3 요청·응답·스트리밍 |
 | M14 | fsync 스레드·시그널·종료 | P3 종료 |
 | M15 | 처리량 비교 | P3 벤치 |
+| M16 | `[UD]` B+tree `erase`(빌리기·병합)·`assign`·`range` | UD B+tree |
+| M17 | `[UD]` 저장소: 묘비·UPDATE 레코드, 스캐너 종류 판정 + 살아 있는 id 표, `Table::modify`, id 순서 커서, dump | UD 저장소·손상·원자성·동시성 |
+| M18 | `[UD]` Lexer·Parser·Binder·Executor `modify`, CLI 출력 | UD SQL·엔진, CLI 종단 간 |
+| M19 | `[UD]` 서버 요청 형태·`affectedRows` | UD 서버 |
 
 ## 18. 차별점
 
@@ -665,4 +770,8 @@ docs/       architecture.md  decisions.md  decisions-summary.md  refactoring.md 
   - 대책 후보: keep-alive 타임아웃 단축, 요청 단위 디스패치(이벤트 루프). `refactoring.md`에 있다.
 - **거절 레인은 스레드 1개**다. 503을 받을 클라이언트가 요청을 아주 느리게 보내면 거절 레인이 읽기 타임아웃(5초)만큼 막히고, 그동안 다른 거절도 늦어진다.
 - 순차 삽입 시 리프 충전율 50%: 1M 건이면 인덱스 메모리가 약 2배다. 재시작하면 회복된다. 맨 오른쪽 분할 특수 처리는 `refactoring.md`에 있다.
+- `[UD]` **파일이 줄지 않는다.** UPDATE·DELETE는 덧붙이기만 하고 옛 버전을 지우지 않는다. 같은 행을 계속 고치면 파일과 시작 시 복구 시간이 늘어난다. compaction은 `refactoring.md`에 있다(지운 최대 id를 기록해야 id 재사용을 막을 수 있음).
+- `[UD]` **스캔은 READ COMMITTED 수준이다.** 스캔 도중 커밋된 여러 행짜리 UPDATE·DELETE는 일부 행만 반영되어 보일 수 있다(#21).
+- `[UD]` **한 요청이 바꿀 수 있는 행 수에 상한이 있다**(프레임 4 MiB). 1M 행 테이블의 `DELETE FROM t`는 400이다.
+- `[UD]` 수정이 흩어진 테이블의 전체 스캔은 행마다 따로 읽어 느려질 수 있다. 수정 없는 구간은 예전처럼 순차 읽기다.
 - CLI 출력 폭이 바이트 기준이라 여러 바이트 글자는 정렬이 어긋난다. 의도한 단순화다.

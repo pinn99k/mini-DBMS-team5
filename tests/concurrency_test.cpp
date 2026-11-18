@@ -109,6 +109,85 @@ TEST_F(ConcurrencyTest, ConcurrentScansNeverSeePartialBatches) {
   EXPECT_TRUE(db->table("t").validateIndex());
 }
 
+// UPDATE·DELETE (decisions #21 #24) ---------------------------------------------------------
+
+TEST_F(ConcurrencyTest, ConcurrentUpdatesOfDifferentColumnsLoseNothing) {
+  // 레코드는 행 전체를 쓴다. 대상 찾기가 writeMu_ 밖이면 한쪽 변경이 다른 쪽에 덮인다(잃어버린 갱신).
+  writeFile(dir / "p.schema", "a INT\nb INT\n");
+  db.reset();
+  db = Database::open(dir.path());
+  Table& p = db->table("p");
+  p.insert({{Value{int64_t{0}}, Value{int64_t{0}}}});
+  constexpr int kIters = 400;
+  auto bump = [&](size_t col) {
+    for (int i = 1; i <= kIters; ++i) {
+      Table::Edit e;
+      e.id = 1;
+      e.set = {{col, Value{int64_t{i}}}};
+      ASSERT_EQ(p.modify({e}), std::vector<uint64_t>{1});
+    }
+  };
+  std::thread ta(bump, 1), tb(bump, 2);
+  ta.join();
+  tb.join();
+  const Row r = *p.findById(1);
+  EXPECT_EQ(std::get<int64_t>(r[1]), kIters);
+  EXPECT_EQ(std::get<int64_t>(r[2]), kIters);
+}
+
+TEST_F(ConcurrencyTest, ScansDuringUpdatesAndDeletesSeeEachIdOnceInOrder) {
+  Table& t = db->table("t");
+  std::vector<std::vector<Value>> rows(2000, {Value{std::string("r")}, Value{int64_t{0}}});
+  t.insert(rows);
+  std::atomic<bool> stop{false};
+  std::atomic<int> bad{0}, scans{0};
+
+  std::thread writer([&] {
+    for (int64_t i = 1; i <= 100; ++i) {
+      Table::Edit up;  // 여러 행 UPDATE (필터 경로)
+      up.filter = Predicate{2, Value{i - 1}};
+      up.set = {{2, Value{i}}};
+      Table::Edit gone;
+      gone.id = i * 5;
+      gone.remove = true;
+      t.modify({up, gone});
+      t.insert({{Value{std::string("new")}, Value{int64_t{-1}}}});
+    }
+  });
+  std::vector<std::thread> readers;
+  for (int k = 0; k < 2; ++k) {
+    readers.emplace_back([&] {
+      while (!stop.load()) {
+        auto c = t.scan();
+        Row r;
+        int64_t prev = 0;
+        uint64_t n = 0;
+        while (c.next(r)) {
+          const int64_t id = std::get<int64_t>(r[0]);
+          if (id <= prev) ++bad;  // 같은 id 두 번 또는 순서 뒤집힘
+          prev = id;
+          ++n;
+        }
+        if (n > 2300) ++bad;
+        ++scans;
+      }
+    });
+  }
+  writer.join();
+  stop = true;
+  for (auto& th : readers) th.join();
+
+  EXPECT_EQ(bad.load(), 0) << "of " << scans.load() << " scans";
+  EXPECT_GT(scans.load(), 0);
+  EXPECT_EQ(t.rowCount(), 2000u - 100u + 100u);
+  std::string why;
+  EXPECT_TRUE(t.validateIndex(&why)) << why;
+  db.reset();  // 재시작 후 같은 상태
+  db = Database::open(dir.path());
+  EXPECT_EQ(db->table("t").rowCount(), 2000u);
+  EXPECT_FALSE(db->table("t").findById(5));
+}
+
 TEST(ThreadPoolTest, RunsTasksAndRejectsWhenFull) {
   std::mutex m;
   std::condition_variable cv;

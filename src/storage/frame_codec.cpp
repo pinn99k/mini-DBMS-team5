@@ -13,6 +13,10 @@ constexpr uint8_t kMagic[4] = {'M', 'D', 'B', '1'};
 
 void encodePayload(const Schema& schema, const Row& row, std::vector<uint8_t>& out) {
   const auto& cols = schema.columns();
+  if (row.size() == 1) {  // 묘비: id만 (스키마에는 id 말고 컬럼이 최소 1개 있다)
+    bytes::putI64(out, std::get<int64_t>(row[0]));
+    return;
+  }
   if (row.size() != cols.size()) throw StorageError("encode: row has wrong number of fields");
   for (size_t i = 0; i < cols.size(); ++i) {
     if (cols[i].type == ColumnType::Int) {
@@ -59,6 +63,15 @@ std::vector<uint8_t> encode(const Schema& schema, const std::vector<Row>& rows,
   bytes::setU32(out.data(), frameLen);
   bytes::putU32(out, crc32(out.data() + 4, frameLen));
   return out;
+}
+
+size_t payloadSize(const Schema& schema, const Row& row) {
+  if (row.size() == 1) return kTombstonePayload;
+  size_t n = 0;
+  for (size_t i = 0; i < row.size(); ++i) {
+    n += schema.columns()[i].type == ColumnType::Int ? 8 : 2 + std::get<std::string>(row[i]).size();
+  }
+  return n;
 }
 
 Row decodePayload(const Schema& schema, const uint8_t* p, size_t len) {

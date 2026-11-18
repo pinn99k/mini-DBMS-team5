@@ -106,6 +106,38 @@ TEST_F(ServerTest, InsertBatchSelectAndExplain) {
   EXPECT_EQ(ex->body, "{\"ok\":true,\"plan\":\"IndexScan(users, id=2)\"}");
 }
 
+TEST_F(ServerTest, UpdateDeleteBatchReturnsAffectedRowsPerStatement) {
+  start();
+  post("INSERT INTO users VALUES ('kim', 25); INSERT INTO users VALUES ('lee', 30); INSERT INTO users VALUES ('kim', 1)");
+  auto r = post("UPDATE users SET age = 26 WHERE name = 'kim'; DELETE FROM users WHERE id = 2; "
+                "UPDATE users SET age = 0 WHERE id = 2");
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 200);
+  EXPECT_EQ(r->body, "{\"ok\":true,\"affectedRows\":[2,1,0]}");  // 셋째는 둘째가 지운 행
+  auto sel = post("SELECT id, age FROM users");
+  ASSERT_TRUE(sel);
+  EXPECT_EQ(lines(sel->body), (std::vector<std::string>{"{\"columns\":[\"id\",\"age\"]}", "[1,26]", "[3,26]",
+                                                       "{\"ok\":true,\"rowCount\":2}"}));
+
+  auto status = [&](const std::string& body) {
+    auto x = post(body);
+    return x ? x->status : -1;
+  };
+  EXPECT_EQ(status("INSERT INTO users VALUES ('a', 1); DELETE FROM users"), 400);  // 섞기 금지
+  EXPECT_EQ(status("SELECT * FROM users; UPDATE users SET age = 1"), 400);
+  EXPECT_EQ(status("UPDATE nope SET age = 1"), 404);
+  EXPECT_EQ(status("DELETE FROM users; UPDATE users SET id = 1"), 400);  // 하나라도 틀리면 전체 거절
+  EXPECT_EQ(db->table("users").rowCount(), 2u);
+  auto pe = post("UPDATE users SET");
+  ASSERT_TRUE(pe);
+  EXPECT_EQ(pe->status, 400);
+  EXPECT_NE(pe->body.find("\"type\":\"ParseError\""), std::string::npos);
+
+  io.failWriteAfter = 1;  // 쓰기 실패 → 500, 아무것도 반영 안 됨
+  EXPECT_EQ(status("DELETE FROM users"), 500);
+  EXPECT_EQ(db->table("users").rowCount(), 2u);
+}
+
 TEST_F(ServerTest, RequestShapeAndErrorStatuses) {
   start();
   auto status = [&](const std::string& body) {

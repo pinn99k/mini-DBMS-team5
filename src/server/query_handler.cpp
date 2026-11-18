@@ -60,6 +60,18 @@ void respondInsert(const Executor& exec, std::vector<Statement>& stmts, httplib:
   res.set_content(body, kJson);
 }
 
+// UPDATE·DELETE 배치 (decisions #23): 전부 바인딩 → 프레임 하나로 커밋 (Executor::modify → Table::modify)
+void respondModify(const Executor& exec, const std::vector<Statement>& stmts, httplib::Response& res) {
+  const auto counts = exec.modify(stmts);
+  std::string body = "{\"ok\":true,\"affectedRows\":[";
+  for (size_t i = 0; i < counts.size(); ++i) {
+    if (i) body += ',';
+    body += std::to_string(counts[i]);
+  }
+  body += "]}";
+  res.set_content(body, kJson);
+}
+
 void respondExplain(const Executor& exec, const ExplainStmt& ex, httplib::Response& res) {
   std::string body = "{\"ok\":true,\"plan\":";
   json::appendString(body, exec.explain(ex.select));
@@ -100,14 +112,19 @@ void QueryHandler::handle(const httplib::Request& req, httplib::Response& res) c
   std::vector<Statement> stmts;
   if (!parseBody(req.body, stmts, res)) return;
 
-  size_t inserts = 0;
-  for (const auto& s : stmts) inserts += std::holds_alternative<InsertStmt>(s) ? 1 : 0;
+  size_t inserts = 0, modifies = 0;
+  for (const auto& s : stmts) {
+    inserts += std::holds_alternative<InsertStmt>(s) ? 1 : 0;
+    modifies += std::holds_alternative<UpdateStmt>(s) || std::holds_alternative<DeleteStmt>(s) ? 1 : 0;
+  }
 
   try {
     if (inserts == stmts.size()) return respondInsert(exec_, stmts, res);
+    if (modifies == stmts.size()) return respondModify(exec_, stmts, res);
     if (stmts.size() != 1) {
       return sendError(res, 400, "RequestError",
-                       "a request must be exactly one SELECT, one EXPLAIN, or 1..1000 INSERTs");
+                       "a request must be exactly one SELECT, one EXPLAIN, 1..1000 INSERTs, or 1..1000 "
+                       "UPDATE/DELETEs");
     }
     if (const auto* ex = std::get_if<ExplainStmt>(&stmts[0])) return respondExplain(exec_, *ex, res);
     respondSelect(exec_, std::get<SelectStmt>(stmts[0]), res);

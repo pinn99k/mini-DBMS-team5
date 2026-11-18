@@ -53,7 +53,7 @@ grep -q 'INSERT' "$D/out" && fail "bail should stop before the insert"
 
 # dump
 $L "$BIN" dump --data "$D/data" users > "$D/out" 2> "$D/err" || fail "dump"
-grep -q '^3 frames, 3 records, ok$' "$D/out" || fail "dump summary"
+grep -q '^3 frames, 3 records, 3 live, ok$' "$D/out" || fail "dump summary"
 grep -q "name='lee'" "$D/out" || fail "dump record"
 
 # 꼬리 손상: 잘라내고 경고, .torn 보관
@@ -78,5 +78,38 @@ rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "mid corruption should refuse to start (exit 2), got $rc"
 grep -q 'refusing to start' "$D/err" || fail "mid corruption message"
+
+# UPDATE·DELETE (decisions #20): 출력, 재시작 후 유지, dump의 update/delete 레코드
+mkdir "$D/data2"
+printf 'name VARCHAR(8)\nage INT\n' > "$D/data2/users.schema"
+cat > "$D/u.sql" <<'EOF'
+INSERT INTO users VALUES ('kim', 25);
+INSERT INTO users VALUES ('lee', 30);
+INSERT INTO users VALUES ('kim', 40);
+UPDATE users SET age = 26 WHERE id = 1;
+UPDATE users SET name = 'park' WHERE name = 'kim';
+DELETE FROM users WHERE id = 2;
+DELETE FROM users WHERE id = 2;
+UPDATE users SET id = 9;
+EOF
+set +e
+$L "$BIN" run --data "$D/data2" "$D/u.sql" > "$D/out" 2> "$D/err"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "expected exit 1 (SET id fails), got $rc"
+grep -q '^UPDATE 1$' "$D/out" || fail "update by id"
+grep -q '^UPDATE 2$' "$D/out" || fail "update by filter"
+grep -q '^DELETE 1$' "$D/out" || fail "delete"
+grep -q '^DELETE 0$' "$D/out" || fail "delete of deleted id"
+grep -q "u.sql:8:18: SchemaError: column 'id' cannot be updated" "$D/err" || fail "SET id error"
+echo "SELECT * FROM users; INSERT INTO users VALUES ('choi', 1);" > "$D/v.sql"
+$L "$BIN" run --data "$D/data2" "$D/v.sql" > "$D/out" 2> "$D/err" || fail "run after update/delete"
+grep -q '^(2 rows)$' "$D/out" || fail "two rows after delete and restart"
+grep -q 'park' "$D/out" || fail "updated name survives restart"
+grep -q '^INSERT 1 (id=4)$' "$D/out" || fail "id not reused after delete"
+$L "$BIN" dump --data "$D/data2" users > "$D/out" 2> "$D/err" || fail "dump after update/delete"
+grep -q ' update id=1 ' "$D/out" || fail "dump update record"
+grep -q ' delete id=2$' "$D/out" || fail "dump delete record"
+grep -q ' records, 3 live, ok$' "$D/out" || fail "dump live count"
 
 echo "cli_e2e: ok"
