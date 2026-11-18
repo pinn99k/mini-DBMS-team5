@@ -31,6 +31,12 @@ start
 q "SELECT * FROM users" | tail -1 | grep -q '"ok":true,"rowCount":1' || fail "select"
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary "SELECT * FROM nope" "$URL/query")
 [ "$code" = 404 ] || fail "unknown table status $code"
+# UPDATE·DELETE 배치 (decisions #23)
+q "INSERT INTO users VALUES ('tmp', 1)" > /dev/null
+[ "$(q "UPDATE users SET age = 26 WHERE id = 1; DELETE FROM users WHERE id = 2")" = '{"ok":true,"affectedRows":[1,1]}' ] || fail "update/delete batch"
+q "SELECT age FROM users WHERE id = 1" | grep -q '^\[26\]$' || fail "updated value"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary "INSERT INTO users VALUES ('a', 1); DELETE FROM users" "$URL/query")
+[ "$code" = 400 ] || fail "mixed insert/delete status $code"
 
 # 부하: 4개 클라이언트가 10행 배치를 계속 보낸다. 중간에 SIGTERM.
 batch=""
