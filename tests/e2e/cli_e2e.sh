@@ -53,7 +53,7 @@ grep -q 'INSERT' "$D/out" && fail "bail should stop before the insert"
 
 # dump
 $L "$BIN" dump --data "$D/data" users > "$D/out" 2> "$D/err" || fail "dump"
-grep -q '^3 frames, 3 records, ok$' "$D/out" || fail "dump summary"
+grep -q '^3 frames, 3 records, 3 live, ok$' "$D/out" || fail "dump summary"
 grep -q "name='lee'" "$D/out" || fail "dump record"
 
 # 꼬리 손상: 잘라내고 경고, .torn 보관

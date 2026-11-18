@@ -17,11 +17,6 @@ struct BoundInsert {
   std::vector<Value> values;  // 스키마 순서, id 제외
 };
 
-struct Predicate {
-  size_t column = 0;  // 스키마 컬럼 인덱스 (0 = id)
-  Value value;
-};
-
 struct BoundSelect {
   Table* table = nullptr;
   std::vector<size_t> projection;  // 출력 컬럼 → 스키마 컬럼 인덱스

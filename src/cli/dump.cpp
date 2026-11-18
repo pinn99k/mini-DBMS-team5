@@ -62,14 +62,16 @@ int dumpTable(const std::filesystem::path& dataDir, const std::string& table, st
   cb.onFrame = [&](uint64_t pos, uint32_t frameLen, uint32_t count) {
     out << "frame #" << frameNo++ << " @" << pos << " len=" << frameLen << " records=" << count << " crc=ok\n";
   };
-  cb.onRecord = [&](uint64_t offset, const Row& row) {
+  cb.onRecord = [&](frame::RecordKind kind, uint64_t offset, const Row& row) {
     out << "  @" << offset;
-    printRow(out, schema, row);
+    if (kind == frame::RecordKind::Update) out << " update";
+    if (kind == frame::RecordKind::Delete) out << " delete";
+    printRow(out, schema, row);  // 묘비는 id만
     out << "\n";
   };
   const frame::ScanResult r = frame::scanFrames(io, fd, size, schema, cb);
   if (r.status == frame::ScanStatus::Ok) {
-    out << r.frames << " frames, " << r.records << " records, ok\n";
+    out << r.frames << " frames, " << r.records << " records, " << r.live.size() << " live, ok\n";
     return 0;
   }
   const bool tail = r.status == frame::ScanStatus::TornTail;
