@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
-#include <map>
 
 #include "common/bytes.h"
 #include "common/errors.h"
@@ -197,11 +196,18 @@ void Table::writeFrame(const std::vector<uint8_t>& bytes) {
 }
 
 // UPDATE·DELETE (architecture §5.4b). 대상 찾기부터 쓰기까지 writeMu_ 안 → 잃어버린 갱신이 없다 (#24).
-// pending = 이 배치에서 바뀐 id의 최종 상태(nullopt = 지움). 뒤 문장은 pending을 먼저 본다.
 std::vector<uint64_t> Table::modify(const std::vector<Edit>& edits) {
   std::lock_guard<std::mutex> writer(writeMu_);
   requireWritable();
-  std::map<int64_t, std::optional<Row>> pending;
+  Pending pending;
+  std::vector<uint64_t> counts = stageEdits(edits, pending);
+  if (!pending.empty()) commitPending(pending);
+  return counts;
+}
+
+// 1단계: 문장을 순서대로 현재 행에 적용해 pending에 모은다. 파일·공개 상태는 바꾸지 않는다.
+// 뒤 문장은 pending을 먼저 본다(앞 문장의 결과). 프레임 상한을 넘으면 쓰기 전에 SchemaError.
+std::vector<uint64_t> Table::stageEdits(const std::vector<Edit>& edits, Pending& pending) const {
   uint64_t frameLen = 4;  // record_count + 레코드들. 쓰기 전에 상한을 넘는지 본다
   auto recordLen = [&](const std::optional<Row>& r) {
     return 4 + (r ? frame::payloadSize(schema_, *r) : frame::kTombstonePayload);
@@ -247,8 +253,11 @@ std::vector<uint64_t> Table::modify(const std::vector<Edit>& edits) {
     }
     counts.push_back(n);
   }
-  if (pending.empty()) return counts;
+  return counts;
+}
 
+// 2단계: pending을 id 순서로 프레임 하나에 쓰고(지움 = 묘비) 공개한다.
+void Table::commitPending(Pending& pending) {
   std::vector<Row> rows;
   rows.reserve(pending.size());
   for (auto& [id, r] : pending) rows.push_back(r ? std::move(*r) : Row{Value{id}});  // 지움 = 묘비
@@ -270,7 +279,6 @@ std::vector<uint64_t> Table::modify(const std::vector<Edit>& edits) {
     }
   }
   dirty_.store(true);
-  return counts;
 }
 
 Table::Cursor Table::scan() const {

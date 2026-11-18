@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -98,6 +99,10 @@ class Table {
   Table(std::filesystem::path path, std::string name, Schema schema, FileIO& io, int fd);
   void recover(uint64_t size);
   void saveAndTruncateTail(uint64_t at, uint64_t size);
+  // modify의 두 단계 (architecture §5.4b). 둘 다 writeMu_ 안에서.
+  using Pending = std::map<int64_t, std::optional<Row>>;  // id → 최종 상태 (nullopt = 지움)
+  std::vector<uint64_t> stageEdits(const std::vector<Edit>& edits, Pending& pending) const;  // 찾기·적용
+  void commitPending(Pending& pending);                                                       // 쓰기·공개
   void requireWritable() const;                        // writeMu_ 안에서
   void writeFrame(const std::vector<uint8_t>& bytes);  // writeMu_ 안에서. 실패하면 되돌리고 던짐
   Row readRecord(uint64_t offset) const;

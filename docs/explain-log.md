@@ -38,3 +38,4 @@
 - 2026-11-17 | `Table::modify` 대상 찾기를 `writeMu_` 안에서(#24) — 밖에서 찾으면 두 UPDATE가 어떻게 서로를 덮나 (AI) | 대기 |
 - 2026-11-17 | 락 순서 `writeMu_` → `mu_` — `modify`가 커서를 돌릴 때 교착이 안 나는 이유 (AI) | 대기 |
 - 2026-11-17 | 경보(M16) `src/index/bplus_tree.h` `rebalanceInternal` CC 13·`rebalanceLeaf`와 중복 블록 — 왼쪽 빌리기/오른쪽 빌리기/병합 3갈래가 리프·내부에 각각 있음(§9.6 그대로). 리프는 키·값만 옮기고 내부는 자식까지 옮겨 하나로 합치면 분기가 섞임. 왼쪽 회전에서 부모 경계값과 형제 첫 키가 각각 어디로 가나 | 대기 |
+- 2026-11-18 | 경보(M17) `src/storage/table.cpp` `Table::modify` CC 22 → `stageEdits`(찾기·적용, 읽기만)·`commitPending`(쓰기·공개)로 나눔(§5.4b 두 단계). `stageEdits`가 실패하면 왜 파일·인덱스가 전혀 안 바뀌나 | 대기 |
